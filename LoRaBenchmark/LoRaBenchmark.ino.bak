@@ -1,0 +1,1180 @@
+/*
+ * LoRa Benchmarking Tool for TTGO LoRa T1 Board
+ * 
+ * This sketch sets up a WiFi AP with a captive portal that allows
+ * users to input various data for LoRa benchmarking tests.
+ * 
+ * Features:
+ * - WiFi AP with SSID "lora node1"
+ * - Modern web-based captive portal UI
+ * - LoRa transmission on 868MHz
+ * - Benchmark measurements for various data sizes
+ * - Performance metrics display with charts
+ * 
+ * Hardware: TTGO LoRa T1 (ESP32 + SX1276)
+ */
+
+// Libraries for WiFi and Web Server
+#include <WiFi.h>
+#include <DNSServer.h>
+#include <WebServer.h>
+#include <ESPmDNS.h>
+#include <SPIFFS.h>
+
+// LoRa Libraries
+#include <SPI.h>
+#include <LoRa.h>
+
+// LoRa Pin definitions for TTGO T1
+#define LORA_SCK    5    // GPIO5
+#define LORA_MISO   19   // GPIO19
+#define LORA_MOSI   27   // GPIO27
+#define LORA_CS     18   // GPIO18
+#define LORA_RST    14   // GPIO14
+#define LORA_IRQ    26   // GPIO26
+
+// LED Pin
+#define LED_PIN     2
+
+// WiFi AP settings
+const char* AP_SSID = "lora node1";
+const char* AP_PASSWORD = "lorabenchmark";
+IPAddress apIP(192, 168, 4, 1);
+IPAddress netMsk(255, 255, 255, 0);
+
+// DNS server for captive portal
+const byte DNS_PORT = 53;
+DNSServer dnsServer;
+WebServer webServer(80);
+
+// LoRa frequency - 868MHz for Europe, 915MHz for US
+const long FREQUENCY = 868E6;
+
+// For storing benchmark results
+struct BenchmarkResult {
+  int dataSize;
+  float transmissionTime;
+  float latency;
+  int errorRate;
+};
+
+#define MAX_RESULTS 10
+BenchmarkResult results[MAX_RESULTS];
+int resultCount = 0;
+// Benchmark parameters
+int packetSize = 32;            // Default packet size in bytes
+int packetCount = 10;           // Number of packets to send
+int transmissionDelay = 200;    // Delay between transmissions in ms
+String dataType = "random";     // Type of data to send (random, zeros, ones, etc.)
+bool acknowledgment = true;     // Whether to wait for acknowledgment
+int spreadingFactor = 7;        // LoRa spreading factor (7-12)
+int bandwidth = 125;            // LoRa bandwidth (kHz)
+int codingRate = 5;             // LoRa coding rate (5-8)
+
+// Benchmark status tracking
+volatile bool benchmarkRunning = false;
+volatile int benchmarkProgress = 0;
+volatile bool benchmarkComplete = false;
+String benchmarkStatus = "Ready to start benchmarking";
+SemaphoreHandle_t resultsMutex = NULL;
+
+// For communication with benchmark task
+TaskHandle_t benchmarkTaskHandle = NULL;
+// Forward declarations
+void setupAP();
+void setupLoRa();
+void setupDNS();
+void setupWebServer();
+void handleRoot();
+void handleNotFound();
+void handleStartBenchmark();
+void handleGetResults();
+void handleSettings();
+void runBenchmark();
+void generatePayload(uint8_t* buffer, int size, String type);
+void updateDisplay(String message);
+void updateDisplay(String message);
+void captivePortalResponse();
+void handleBenchmarkStatus();
+void displayError(String message);
+
+// Make sure we have a FreeRTOS compatible task declaration for the benchmark task
+void benchmarkTask(void * parameter);
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+  Serial.println("LoRa Benchmarking Tool Starting");
+  
+  // Initialize LED
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, HIGH);
+  
+  // Initialize SPIFFS
+  if (!SPIFFS.begin(true)) {
+    Serial.println("SPIFFS Mount Failed");
+  }
+  
+  // Setup LoRa
+  setupLoRa();
+  
+  // Setup WiFi AP
+  setupAP();
+  
+  // Setup DNS server for captive portal
+  setupDNS();
+  
+  // Setup Web Server
+  setupWebServer();
+  
+  Serial.println("Setup complete");
+  updateDisplay("Ready for benchmarking!");
+  
+  // Create mutex for protecting results array
+  resultsMutex = xSemaphoreCreateMutex();
+}
+void loop() {
+  // Handle DNS and Web Server
+  dnsServer.processNextRequest();
+  webServer.handleClient();
+  
+  // Blink LED to indicate system is running
+  static unsigned long previousMillis = 0;
+  unsigned long currentMillis = millis();
+  if (currentMillis - previousMillis >= 1000) {
+    previousMillis = currentMillis;
+    digitalWrite(LED_PIN, !digitalRead(LED_PIN));
+  }
+}
+
+void setupAP() {
+  Serial.println("Setting up WiFi Access Point...");
+  
+  WiFi.mode(WIFI_AP);
+  WiFi.softAPConfig(apIP, apIP, netMsk);
+  WiFi.softAP(AP_SSID, AP_PASSWORD);
+  
+  Serial.print("AP IP address: ");
+  Serial.println(WiFi.softAPIP());
+  
+  // Setup mDNS responder
+  if (!MDNS.begin("lorabenchmark")) {
+    Serial.println("Error setting up mDNS responder!");
+  } else {
+    Serial.println("mDNS responder started");
+    MDNS.addService("http", "tcp", 80);
+  }
+}
+
+void setupDNS() {
+  // Setup DNS server for captive portal
+  dnsServer.start(DNS_PORT, "*", apIP);
+  Serial.println("DNS server started");
+}
+
+void setupLoRa() {
+  Serial.println("Initializing LoRa...");
+  
+  // Override the default pins for TTGO LoRa T1
+  SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_CS);
+  LoRa.setPins(LORA_CS, LORA_RST, LORA_IRQ);
+  
+  // Initialize LoRa at specified frequency
+  if (!LoRa.begin(FREQUENCY)) {
+    Serial.println("LoRa initialization failed!");
+    updateDisplay("LoRa init failed!");
+    while (1);
+  }
+  
+  // Set default LoRa parameters
+  LoRa.setSpreadingFactor(spreadingFactor);
+  LoRa.setSignalBandwidth(bandwidth * 1000);
+  LoRa.setCodingRate4(codingRate);
+  LoRa.enableCrc();
+  
+  Serial.println("LoRa initialized successfully");
+}
+
+void setupWebServer() {
+  Serial.println("Setting up Web Server...");
+  
+  // Route to serve the main HTML page
+  webServer.on("/", HTTP_GET, handleRoot);
+  
+  // Route to handle benchmark start
+  webServer.on("/start-benchmark", HTTP_POST, handleStartBenchmark);
+  
+  // Route to get benchmark results
+  webServer.on("/results", HTTP_GET, handleGetResults);
+  
+  // Route to handle settings changes
+  webServer.on("/settings", HTTP_POST, handleSettings);
+  
+  // Captive portal detection
+  webServer.on("/generate_204", captivePortalResponse);
+  webServer.on("/fwlink", captivePortalResponse);
+  
+  // Add benchmark status endpoint
+  webServer.on("/benchmark-status", HTTP_GET, handleBenchmarkStatus);
+  
+  // Handle not found - redirect to captive portal
+  webServer.onNotFound(handleNotFound);
+  
+  // Start web server
+  webServer.begin();
+  Serial.println("Web server started");
+}
+
+void captivePortalResponse() {
+  webServer.sendHeader("Location", String("http://") + apIP.toString(), true);
+  webServer.send(302, "text/plain", "");
+}
+
+void handleRoot() {
+  String html = R"rawliteral(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LoRa Benchmark</title>
+    <style>
+        :root {
+            --primary-color: #4285f4;
+            --secondary-color: #34a853;
+            --accent-color: #ea4335;
+            --background-color: #f8f9fa;
+            --card-color: #ffffff;
+            --text-color: #202124;
+        }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: var(--background-color);
+            color: var(--text-color);
+        }
+        header {
+            background-color: var(--primary-color);
+            color: white;
+            padding: 1rem;
+            text-align: center;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 1rem;
+        }
+        .card {
+            background-color: var(--card-color);
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+        h1, h2, h3 {
+            margin-top: 0;
+        }
+        .tab-container {
+            display: flex;
+            margin-bottom: 1rem;
+        }
+        .tab {
+            padding: 0.5rem 1rem;
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            transition: all 0.3s;
+        }
+        .tab.active {
+            border-bottom: 2px solid var(--primary-color);
+            color: var(--primary-color);
+            font-weight: bold;
+        }
+        .tab-content {
+            display: none;
+        }
+        .tab-content.active {
+            display: block;
+        }
+        .form-group {
+            margin-bottom: 1rem;
+        }
+        label {
+            display: block;
+            margin-bottom: 0.5rem;
+            font-weight: 500;
+        }
+        input, select {
+            width: 100%;
+            padding: 0.5rem;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        input[type="number"] {
+            width: 100%;
+        }
+        button {
+            background-color: var(--primary-color);
+            color: white;
+            border: none;
+            padding: 0.75rem 1.5rem;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: background-color 0.3s;
+        }
+        button:hover {
+            background-color: #3367d6;
+        }
+        .results-container {
+            overflow-x: auto;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 1rem;
+        }
+        th, td {
+            padding: 0.75rem;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        th {
+            background-color: #f2f2f2;
+        .charts-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(450px, 1fr));
+            gap: 1.5rem;
+            margin-top: 2rem;
+        }
+        .chart-wrapper {
+            background-color: #ffffff;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            padding: 1rem;
+        }
+        .chart-wrapper h3 {
+            text-align: center;
+            margin-top: 0;
+            margin-bottom: 1rem;
+            font-size: 1rem;
+            color: var(--primary-color);
+        }
+        .chart-container {
+            height: 250px;
+            position: relative;
+        }
+        @media (max-width: 768px) {
+            .charts-container {
+                grid-template-columns: 1fr;
+            }
+        }
+        }
+        .status {
+            padding: 1rem;
+            border-radius: 4px;
+            margin-bottom: 1rem;
+            display: none;
+        }
+        .status.success {
+            background-color: #d4edda;
+            color: #155724;
+            display: block;
+        }
+        .status.error {
+            background-color: #f8d7da;
+            color: #721c24;
+            display: block;
+        }
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(0, 0, 0, 0.1);
+            border-radius: 50%;
+            border-top-color: var(--primary-color);
+            animation: spin 1s ease-in-out infinite;
+            margin-right: 10px;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        .advanced-toggle {
+            color: var(--primary-color);
+            cursor: pointer;
+            margin-bottom: 1rem;
+            display: inline-block;
+        }
+        .advanced-settings {
+            display: none;
+            background-color: #f9f9f9;
+            padding: 1rem;
+            border-radius: 4px;
+            margin-bottom: 1rem;
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 1rem;
+        }
+        @media (max-width: 768px) {
+            .grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>LoRa Benchmarking Tool</h1>
+        <p>Test and measure LoRa communication performance</p>
+    </header>
+
+    <div class="container">
+        <div class="tab-container">
+            <div class="tab active" data-tab="benchmark">Benchmark</div>
+            <div class="tab" data-tab="results">Results</div>
+            <div class="tab" data-tab="settings">Settings</div>
+        </div>
+
+        <div id="status" class="status"></div>
+
+        <div id="benchmark-tab" class="tab-content active">
+            <div class="card">
+                <h2>LoRa Benchmark Configuration</h2>
+                <div class="form-group">
+                    <label for="packet-size">Packet Size (bytes)</label>
+                    <input type="number" id="packet-size" min="1" max="255" value="32">
+                </div>
+                <div class="form-group">
+                    <label for="packet-count">Number of Packets</label>
+                    <input type="number" id="packet-count" min="1" max="1000" value="10">
+                </div>
+                <div class="form-group">
+                    <label for="data-type">Data Type</label>
+                    <select id="data-type">
+                        <option value="random">Random Data</option>
+                        <option value="zeros">All Zeros</option>
+                        <option value="ones">All Ones</option>
+                        <option value="incremental">Incremental</option>
+                        <option value="alternating">Alternating 0/1</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="ack">Request Acknowledgment</label>
+                    <select id="ack">
+                        <option value="true">Yes</option>
+                        <option value="false">No</option>
+                    </select>
+                </div>
+
+                <div class="advanced-toggle">+ Advanced LoRa Settings</div>
+                <div class="advanced-settings">
+                    <div class="grid">
+                        <div class="form-group">
+                            <label for="sf">Spreading Factor</label>
+                            <select id="sf">
+                                <option value="7">SF7</option>
+                                <option value="8">SF8</option>
+                                <option value="9">SF9</option>
+                                <option value="10">SF10</option>
+                                <option value="11">SF11</option>
+                                <option value="12">SF12</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="bw">Bandwidth (kHz)</label>
+                            <select id="bw">
+                                <option value="125">125</option>
+                                <option value="250">250</option>
+                                <option value="500">500</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="cr">Coding Rate</label>
+                            <select id="cr">
+                                <option value="5">4/5</option>
+                                <option value="6">4/6</option>
+                                <option value="7">4/7</option>
+                                <option value="8">4/8</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="delay">Delay Between Packets (ms)</label>
+                            <input type="number" id="delay" min="0" max="5000" value="200">
+                        </div>
+                    </div>
+                </div>
+                
+                <button id="start-benchmark-btn">Start Benchmark</button>
+            </div>
+
+            <div class="card">
+                <h2>Current Status</h2>
+                <p id="benchmark-status">Ready to start benchmarking</p>
+                <div id="progress-container" style="display: none;">
+                    <p>Progress: <span id="progress">0%</span></p>
+                    <div style="background-color: #eee; border-radius: 4px; height: 20px; margin-top: 10px;">
+                        <div id="progress-bar" style="background-color: var(--primary-color); height: 100%; width: 0%; border-radius: 4px;"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="results-tab" class="tab-content">
+            <div class="card">
+                <h2>Benchmark Results</h2>
+                <div class="results-container">
+                    <table id="results-table">
+                        <thead>
+                            <tr>
+                                <th>Packet Size (bytes)</th>
+                                <th>Transmission Time (ms)</th>
+                                <th>Latency (ms)</th>
+                                <th>Error Rate (%)</th>
+                                <th>Throughput (bytes/s)</th>
+                            </tr>
+                        </thead>
+                        <tbody id="results-body">
+                            <!-- Results will be inserted here by JavaScript -->
+                        </tbody>
+                    </table>
+                </div>
+                
+                <div class="charts-container">
+                    <div class="chart-wrapper">
+                        <h3>Transmission Time vs Packet Size</h3>
+                        <div class="chart-container">
+                            <canvas id="time-chart"></canvas>
+                        </div>
+                    </div>
+                    <div class="chart-wrapper">
+                        <h3>Throughput vs Packet Size</h3>
+                        <div class="chart-container">
+                            <canvas id="throughput-chart"></canvas>
+                        </div>
+                    </div>
+                    <div class="chart-wrapper">
+                        <h3>Latency vs Packet Size</h3>
+                        <div class="chart-container">
+                            <canvas id="latency-chart"></canvas>
+                        </div>
+                    </div>
+                    <div class="chart-wrapper">
+                        <h3>Error Rate Comparison</h3>
+                        <div class="chart-container">
+                            <canvas id="error-chart"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="settings-tab" class="tab-content">
+            <div class="card">
+                <h2>LoRa Radio Settings</h2>
+                <form id="settings-form">
+                    <div class="grid">
+                        <div class="form-group">
+                            <label for="setting-sf">Default Spreading Factor</label>
+                            <select id="setting-sf" name="sf">
+                                <option value="7">SF7</option>
+                                <option value="8">SF8</option>
+                                <option value="9">SF9</option>
+                                <option value="10">SF10</option>
+                                <option value="11">SF11</option>
+                                <option value="12">SF12</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="setting-bw">Default Bandwidth (kHz)</label>
+                            <select id="setting-bw" name="bw">
+                                <option value="125">125</option>
+                                <option value="250">250</option>
+                                <option value="500">500</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="setting-cr">Default Coding Rate</label>
+                            <select id="setting-cr" name="cr">
+                                <option value="5">4/5</option>
+                                <option value="6">4/6</option>
+                                <option value="7">4/7</option>
+                                <option value="8">4/8</option>
+                            </select>
+                        </div>
+                    </div>
+                    <button type="submit">Save Settings</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Tab switching functionality
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                // Remove active class from all tabs
+                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+                
+                // Add active class to clicked tab and corresponding content
+                tab.classList.add('active');
+                const tabId = tab.getAttribute('data-tab');
+                document.getElementById(tabId + '-tab').classList.add('active');
+            });
+        });
+        
+        // Toggle advanced settings
+        document.querySelector('.advanced-toggle').addEventListener('click', function() {
+            const advancedSettings = document.querySelector('.advanced-settings');
+            if (advancedSettings.style.display === 'block') {
+                advancedSettings.style.display = 'none';
+                this.textContent = '+ Advanced LoRa Settings';
+            } else {
+                advancedSettings.style.display = 'block';
+                this.textContent = '- Advanced LoRa Settings';
+            }
+        });
+        
+        // Start benchmark button
+        document.getElementById('start-benchmark-btn').addEventListener('click', function() {
+            const packetSize = document.getElementById('packet-size').value;
+            const packetCount = document.getElementById('packet-count').value;
+            const dataType = document.getElementById('data-type').value;
+            const ack = document.getElementById('ack').value;
+            const sf = document.getElementById('sf').value;
+            const bw = document.getElementById('bw').value;
+            const cr = document.getElementById('cr').value;
+            const delay = document.getElementById('delay').value;
+            
+            // Display status
+            const status = document.getElementById('status');
+            status.textContent = 'Starting benchmark...';
+            status.className = 'status success';
+            
+            // Show progress container
+            document.getElementById('progress-container').style.display = 'block';
+            
+            // Send benchmark request to server
+            fetch('/start-benchmark', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: `packetSize=${packetSize}&packetCount=${packetCount}&dataType=${dataType}&ack=${ack}&sf=${sf}&bw=${bw}&cr=${cr}&delay=${delay}`
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    pollBenchmarkStatus();
+                } else {
+                    status.textContent = 'Error: ' + data.message;
+                    status.className = 'status error';
+                }
+            })
+            .catch(error => {
+                status.textContent = 'Connection error: ' + error;
+                status.className = 'status error';
+            });
+        });
+        
+        // Poll benchmark status
+        function pollBenchmarkStatus() {
+            const statusElem = document.getElementById('benchmark-status');
+            const progressElem = document.getElementById('progress');
+            const progressBarElem = document.getElementById('progress-bar');
+            
+            const pollInterval = setInterval(() => {
+                fetch('/benchmark-status')
+                .then(response => response.json())
+                .then(data => {
+                    statusElem.textContent = data.status;
+                    progressElem.textContent = data.progress + '%';
+                    progressBarElem.style.width = data.progress + '%';
+                    
+                    if (data.complete) {
+                        clearInterval(pollInterval);
+                        document.getElementById('status').textContent = 'Benchmark completed successfully!';
+                        fetchResults();
+                        // Switch to results tab
+                        document.querySelector('.tab[data-tab="results"]').click();
+                    }
+                })
+                .catch(error => {
+                    clearInterval(pollInterval);
+                    document.getElementById('status').textContent = 'Error polling status: ' + error;
+                    document.getElementById('status').className = 'status error';
+                });
+            }, 500);
+        }
+        
+        // Fetch results
+        function fetchResults() {
+            fetch('/results')
+            .then(response => response.json())
+            .then(data => {
+                const resultsBody = document.getElementById('results-body');
+                resultsBody.innerHTML = '';
+                
+                data.forEach(result => {
+                    const row = document.createElement('tr');
+                    const throughput = result.dataSize / (result.transmissionTime / 1000);
+                    
+                    row.innerHTML = `
+                        <td>${result.dataSize}</td>
+                        <td>${result.transmissionTime.toFixed(2)}</td>
+                        <td>${result.latency.toFixed(2)}</td>
+                        <td>${result.errorRate.toFixed(2)}</td>
+                        <td>${throughput.toFixed(2)}</td>
+                    `;
+                    resultsBody.appendChild(row);
+                });
+                
+                // Create charts with the data
+                createCharts(data);
+            })
+            .catch(error => {
+                document.getElementById('status').textContent = 'Error fetching results: ' + error;
+                document.getElementById('status').className = 'status error';
+            });
+        }
+        
+        // Save settings form
+        document.getElementById('settings-form').addEventListener('submit', function(e) {
+            e.preventDefault();
+            
+            const sf = document.getElementById('setting-sf').value;
+            const bw = document.getElementById('setting-bw').value;
+            const cr = document.getElementById('setting-cr').value;
+            
+            fetch('/settings', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: `sf=${sf}&bw=${bw}&cr=${cr}`
+            })
+            .then(response => response.json())
+            .then(data => {
+                const status = document.getElementById('status');
+                if (data.success) {
+                    status.textContent = 'Settings saved successfully!';
+                    status.className = 'status success';
+                } else {
+                    status.textContent = 'Error: ' + data.message;
+                    status.className = 'status error';
+                }
+            })
+            .catch(error => {
+                const status = document.getElementById('status');
+                status.textContent = 'Connection error: ' + error;
+                status.className = 'status error';
+            });
+        });
+        
+        // Initial fetch of results
+                    borderWidth: 2
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    x: {
+                        title: {
+                            display: true,
+                            text: 'Packet Size (bytes)'
+                        }
+                    },
+                    y: {
+                        min: 0,
+                        max: 100,
+                        title: {
+                            display: true,
+                            text: 'Error Rate (%)'
+                        }
+                    }
+                }
+            }
+        });
+    }
+    </script>
+    <!-- Include Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+        // Chart objects
+        let timeChart = null;
+        let throughputChart = null;
+        let latencyChart = null;
+        let errorChart = null;
+        
+        // Chart colors
+        const chartColors = {
+            primary: '#4285f4',
+            secondary: '#34a853',
+            accent: '#ea4335',
+            neutral: '#fbbc05',
+            lightPrimary: 'rgba(66, 133, 244, 0.2)',
+            lightSecondary: 'rgba(52, 168, 83, 0.2)',
+            lightAccent: 'rgba(234, 67, 53, 0.2)',
+            lightNeutral: 'rgba(251, 188, 5, 0.2)'
+        };
+        
+        function createCharts(data) {
+            // Prepare data for charts
+            const packetSizes = data.map(result => result.dataSize);
+            const transmissionTimes = data.map(result => result.transmissionTime);
+            const latencies = data.map(result => result.latency);
+            const errorRates = data.map(result => result.errorRate);
+            const throughputs = data.map(result => result.dataSize / (result.transmissionTime / 1000));
+            
+            // Create/update transmission time chart
+            const timeCtx = document.getElementById('time-chart').getContext('2d');
+            if (timeChart) {
+                timeChart.destroy();
+            }
+            timeChart = new Chart(timeCtx, {
+                type: 'line',
+                data: {
+                    labels: packetSizes,
+                    datasets: [{
+                        label: 'Transmission Time (ms)',
+                        data: transmissionTimes,
+                        backgroundColor: chartColors.lightPrimary,
+                        borderColor: chartColors.primary,
+                        borderWidth: 2,
+                        tension: 0.3,
+                        pointBackgroundColor: chartColors.primary,
+                        fill: true
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Packet Size (bytes)'
+                            }
+                        },
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Time (ms
+)rawliteral";
+
+  webServer.send(200, "text/html", html);
+}
+
+void handleNotFound() {
+  // For captive portal, redirect any request to the root
+  captivePortalResponse();
+}
+
+void handleStartBenchmark() {
+  // Get parameters from the request
+  if (!webServer.hasArg("packetSize") || !webServer.hasArg("packetCount") || 
+      !webServer.hasArg("dataType") || !webServer.hasArg("sf") || 
+      !webServer.hasArg("bw") || !webServer.hasArg("cr")) {
+    webServer.send(400, "application/json", "{\"success\":false,\"message\":\"Missing parameters\"}");
+    return;
+  }
+  
+  // Parse parameters
+  packetSize = webServer.arg("packetSize").toInt();
+  packetCount = webServer.arg("packetCount").toInt();
+  dataType = webServer.arg("dataType");
+  acknowledgment = webServer.arg("ack") == "true";
+  spreadingFactor = webServer.arg("sf").toInt();
+  bandwidth = webServer.arg("bw").toInt();
+  codingRate = webServer.arg("cr").toInt();
+  transmissionDelay = webServer.arg("delay").toInt();
+  
+  // Validate parameters
+  if (packetSize < 1 || packetSize > 255 || packetCount < 1 || packetCount > 1000) {
+    webServer.send(400, "application/json", "{\"success\":false,\"message\":\"Invalid parameters\"}");
+    return;
+  }
+  
+  // Update LoRa settings
+  LoRa.setSpreadingFactor(spreadingFactor);
+  LoRa.setSignalBandwidth(bandwidth * 1000);
+  LoRa.setCodingRate4(codingRate);
+  
+  // Start benchmark in a separate task
+  xTaskCreate(
+    benchmarkTask,     // Function to implement the task
+    "BenchmarkTask",   // Name of the task
+    10000,            // Stack size (bytes)
+    NULL,             // Parameter to pass
+    1,                // Task priority
+    &benchmarkTaskHandle  // Task handle
+  );
+  
+  // Send success response
+  webServer.send(200, "application/json", "{\"success\":true,\"message\":\"Benchmark started\"}");
+}
+
+void handleGetResults() {
+  if (xSemaphoreTake(resultsMutex, portMAX_DELAY)) {
+    String json = "[";
+    for (int i = 0; i < resultCount; i++) {
+      if (i > 0) json += ",";
+      json += "{";
+      json += "\"dataSize\":" + String(results[i].dataSize) + ",";
+      json += "\"transmissionTime\":" + String(results[i].transmissionTime) + ",";
+      json += "\"latency\":" + String(results[i].latency) + ",";
+      json += "\"errorRate\":" + String(results[i].errorRate);
+      json += "}";
+    }
+    json += "]";
+    xSemaphoreGive(resultsMutex);
+    webServer.send(200, "application/json", json);
+  } else {
+    webServer.send(500, "application/json", "{\"success\":false,\"message\":\"Mutex timeout\"}");
+  }
+}
+
+void handleSettings() {
+  if (!webServer.hasArg("sf") || !webServer.hasArg("bw") || !webServer.hasArg("cr")) {
+    webServer.send(400, "application/json", "{\"success\":false,\"message\":\"Missing parameters\"}");
+    return;
+  }
+  
+  // Parse settings
+  int sf = webServer.arg("sf").toInt();
+  int bw = webServer.arg("bw").toInt();
+  int cr = webServer.arg("cr").toInt();
+  
+  // Validate settings
+  if (sf < 7 || sf > 12 || (bw != 125 && bw != 250 && bw != 500) || cr < 5 || cr > 8) {
+    webServer.send(400, "application/json", "{\"success\":false,\"message\":\"Invalid settings\"}");
+    return;
+  }
+  
+  // Update global settings
+  spreadingFactor = sf;
+  bandwidth = bw;
+  codingRate = cr;
+  
+  // Apply to LoRa radio if not in benchmark
+  if (!benchmarkRunning) {
+    LoRa.setSpreadingFactor(spreadingFactor);
+    LoRa.setSignalBandwidth(bandwidth * 1000);
+    LoRa.setCodingRate4(codingRate);
+  }
+  
+  webServer.send(200, "application/json", "{\"success\":true,\"message\":\"Settings saved\"}");
+}
+
+// Handle benchmark status polling
+void handleBenchmarkStatus() {
+  String json = "{";
+  json += "\"status\":\"" + benchmarkStatus + "\",";
+  json += "\"progress\":" + String(benchmarkProgress) + ",";
+  json += "\"complete\":" + String(benchmarkComplete ? "true" : "false");
+  json += "}";
+  webServer.send(200, "application/json", json);
+}
+
+// Update status message - logs to serial only
+void updateDisplay(String message) {
+  Serial.println(message);
+  
+  if (benchmarkRunning) {
+    Serial.print("Progress: ");
+    Serial.print(benchmarkProgress);
+    Serial.println("%");
+  }
+}
+
+// Generate payload data according to the specified type and size
+void generatePayload(uint8_t* buffer, int size, String type) {
+  if (type == "zeros") {
+    memset(buffer, 0, size);
+  } 
+  else if (type == "ones") {
+    memset(buffer, 0xFF, size);
+  } 
+  else if (type == "incremental") {
+    for (int i = 0; i < size; i++) {
+      buffer[i] = i % 256;
+    }
+  } 
+  else if (type == "alternating") {
+    for (int i = 0; i < size; i++) {
+      buffer[i] = (i % 2) ? 0xFF : 0x00;
+    }
+  } 
+  else { // default to random
+    for (int i = 0; i < size; i++) {
+      buffer[i] = random(0, 256);
+    }
+  }
+}
+
+// Main benchmark task
+void benchmarkTask(void * parameter) {
+  if (benchmarkRunning) {
+    // Don't start a benchmark if one is already running
+    vTaskDelete(NULL);
+    return;
+  }
+  
+  // Reset benchmark state
+  benchmarkRunning = true;
+  benchmarkProgress = 0;
+  benchmarkComplete = false;
+  benchmarkStatus = "Starting benchmark...";
+  
+  // Clear previous results
+  if (xSemaphoreTake(resultsMutex, portMAX_DELAY)) {
+    resultCount = 0;
+    xSemaphoreGive(resultsMutex);
+  }
+  
+  updateDisplay("Starting benchmark");
+  Serial.println("Benchmark task started");
+  
+  // Run the benchmark
+  runBenchmark();
+  
+  // Update status
+  benchmarkRunning = false;
+  benchmarkComplete = true;
+  benchmarkStatus = "Benchmark completed";
+  updateDisplay("Benchmark completed");
+  
+  // Task complete
+  vTaskDelete(NULL);
+}
+
+// Run the benchmark with the current settings
+void runBenchmark() {
+  uint8_t *payload = new uint8_t[packetSize];
+  if (!payload) {
+    benchmarkStatus = "Memory allocation failed";
+    return;
+  }
+  
+  int successCount = 0;
+  int totalPackets = packetCount;
+  unsigned long totalTxTime = 0;
+  unsigned long totalLatency = 0;
+  
+  benchmarkStatus = "Running benchmark...";
+  
+  // Generate the payload based on the selected data type
+  generatePayload(payload, packetSize, dataType);
+  
+  // Add result entry
+  BenchmarkResult result;
+  result.dataSize = packetSize;
+  result.transmissionTime = 0;
+  result.latency = 0;
+  result.errorRate = 0;
+  
+  for (int i = 0; i < packetCount; i++) {
+    // Update progress
+    benchmarkProgress = (i * 100) / packetCount;
+    benchmarkStatus = "Sending packet " + String(i + 1) + " of " + String(packetCount);
+    updateDisplay(benchmarkStatus);
+    
+    // Begin packet
+    LoRa.idle();  // Ensure we're not in receive mode
+    
+    // Measure transmission time
+    unsigned long startTime = millis();
+    
+    // Send packet
+    LoRa.beginPacket();
+    
+    // Add sequence number at the start of the packet
+    LoRa.write((uint8_t)(i & 0xFF));
+    
+    // Write test data
+    LoRa.write(payload, packetSize);
+    
+    // End packet and transmit
+    LoRa.endPacket();
+    
+    unsigned long txEndTime = millis();
+    unsigned long txTime = txEndTime - startTime;
+    totalTxTime += txTime;
+    
+    // If acknowledgment is required, wait for response
+    unsigned long latency = 0;
+    bool ackReceived = false;
+    
+    if (acknowledgment) {
+      LoRa.receive();
+      unsigned long ackTimeout = 2000;  // 2 second timeout for ACK
+      unsigned long ackStartTime = millis();
+      
+      while (millis() - ackStartTime < ackTimeout) {
+        int packetSize = LoRa.parsePacket();
+        if (packetSize) {
+          // Read received packet
+          byte seqNum = LoRa.read();
+          
+          // If sequence number matches, count as success
+          if (seqNum == (i & 0xFF)) {
+            latency = millis() - txEndTime;
+            totalLatency += latency;
+            ackReceived = true;
+            successCount++;
+            break;
+          }
+        }
+        yield();  // Allow other tasks to run
+      }
+      
+      if (!ackReceived) {
+        Serial.println("Acknowledgment timeout for packet " + String(i));
+      }
+    } else {
+      // No acknowledgment required, assume success
+      successCount++;
+      delay(transmissionDelay);  // Wait before sending next packet
+    }
+    
+    // Allow other tasks to run
+    yield();
+  }
+  
+  // Calculate results
+  if (successCount > 0) {
+    result.transmissionTime = (float)totalTxTime / successCount;
+    
+    if (acknowledgment) {
+      result.latency = (float)totalLatency / successCount;
+    } else {
+      result.latency = 0;  // No latency measurement without ACK
+    }
+  }
+  
+  // Calculate error rate (percentage of packets that failed)
+  result.errorRate = ((packetCount - successCount) * 100) / packetCount;
+  
+  // Add result to the results array
+  if (xSemaphoreTake(resultsMutex, portMAX_DELAY)) {
+    if (resultCount < MAX_RESULTS) {
+      results[resultCount++] = result;
+    }
+    xSemaphoreGive(resultsMutex);
+  }
+  
+  // Clean up
+  delete[] payload;
+  
+  Serial.println("Benchmark completed");
+  Serial.print("Success rate: ");
+  Serial.print(successCount);
+  Serial.print(" of ");
+  Serial.println(packetCount);
+}

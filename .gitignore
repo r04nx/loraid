@@ -1,0 +1,27 @@
+# Database files
+*.db
+*.db-journal
+
+# CSV exports
+*.csv
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*~
+
+# Compiled files
+*.o
+*.pyc
+__pycache__/
+
+# Logs
+*.log
+
+# Environment variables
+.env
+
+# Build directories
+build/
+dist/

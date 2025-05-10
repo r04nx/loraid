@@ -3,6 +3,7 @@
 #include <SPI.h>
 #include <LoRa.h>
 #include <WiFi.h>
+#include <SPI.h>
 #include <WebServer.h>
 #include <DNSServer.h>
 #include <HTTPClient.h>
@@ -13,10 +14,13 @@
 const char* ssid = "Dedsec";
 const char* password = "asdfghjkl";
 
-// LoRa pins (adjust according to your board)
+// LoRa pins for TTGO LoRa32 V1
 #define LORA_SS 18
 #define LORA_RST 14
 #define LORA_DIO0 26
+#define LORA_MOSI 27
+#define LORA_MISO 19
+#define LORA_SCK 5
 
 // Web server configuration
 const char* captivePortal = "lorasender-enhanced.local";
@@ -26,7 +30,7 @@ const char* apiEndpoint = "192.168.25.237:8000";
 int sf = 7; // Spreading Factor
 int bw = 125E3; // Bandwidth
 int cr = 5; // Coding Rate
-const int frequency = 915E6; // 915MHz
+const int frequency = 868E6; // 868MHz
 
 // EEPROM addresses for storing optimized parameters
 #define EEPROM_SF_ADDR 0
@@ -76,106 +80,444 @@ const char* html = R"rawliteral(
 <html>
 <head>
     <title>LoRa Enhanced Sender</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
-        body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
-        .container { margin-bottom: 20px; }
-        .transmission-params { margin-top: 20px; }
-        .results { margin-top: 20px; }
-        input { width: 100%; padding: 8px; margin: 5px 0; }
-        button { padding: 10px 20px; background: #4CAF50; color: white; border: none; cursor: pointer; }
-        button:hover { background: #45a049; }
-        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
-        th { background-color: #f4f4f4; }
-        .enhanced { background-color: #e8f5e9; }
+        :root {
+            --primary: #8e44ad;
+            --secondary: #9b59b6;
+            --success: #27ae60;
+            --warning: #f39c12;
+            --danger: #e74c3c;
+            --light: #ecf0f1;
+            --dark: #34495e;
+            --enhanced: #e8f5e9;
+            --enhanced-dark: #27ae60;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
+            max-width: 600px; 
+            margin: 0 auto; 
+            padding: 10px; 
+            font-size: 14px;
+            color: #333;
+            background: #f9f9f9;
+        }
+        h1 { 
+            font-size: 1.2rem; 
+            background: var(--primary); 
+            color: white; 
+            padding: 10px; 
+            border-radius: 5px;
+            margin-bottom: 10px;
+        }
+        h2 { 
+            font-size: 1rem; 
+            border-bottom: 2px solid var(--secondary); 
+            padding-bottom: 5px; 
+            margin: 10px 0 5px 0;
+            color: var(--primary);
+        }
+        .flex { display: flex; gap: 5px; }
+        .flex > * { flex: 1; }
+        .panel {
+            background: white;
+            border-radius: 5px;
+            padding: 10px;
+            margin-bottom: 10px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .enhanced-panel {
+            background: var(--enhanced);
+            border-left: 4px solid var(--enhanced-dark);
+        }
+        .badge {
+            display: inline-block;
+            padding: 2px 5px;
+            border-radius: 3px;
+            font-size: 0.7rem;
+            font-weight: bold;
+            color: white;
+        }
+        .badge-optimal { background: var(--success); }
+        .badge-adapting { background: var(--warning); }
+        .badge-exploring { background: var(--secondary); }
+        .badge-fixed { background: var(--dark); }
+        .data-preview {
+            background: var(--light);
+            border-radius: 3px;
+            padding: 5px;
+            margin: 5px 0;
+            font-family: monospace;
+            font-size: 0.8rem;
+            white-space: pre-wrap;
+            word-break: break-all;
+            max-height: 60px;
+            overflow-y: auto;
+        }
+        select, input {
+            width: 100%;
+            padding: 8px;
+            margin: 5px 0;
+            border: 1px solid #ddd;
+            border-radius: 3px;
+        }
+        button {
+            width: 100%;
+            padding: 8px;
+            background: var(--primary);
+            color: white;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: background 0.2s;
+        }
+        button:hover { background: var(--secondary); }
+        button:active { transform: translateY(1px); }
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 5px;
+        }
+        .loading::after {
+            content: "⏳";
+            animation: spin 1s linear infinite;
+            display: inline-block;
+        }
+        @keyframes spin { 100% { transform: rotate(360deg); } }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.8rem;
+        }
+        th, td {
+            padding: 5px;
+            text-align: left;
+            border-bottom: 1px solid #eee;
+        }
+        th { font-weight: bold; color: var(--dark); }
+        .status {
+            padding: 8px;
+            border-radius: 3px;
+            margin: 5px 0;
+            display: none;
+        }
+        .success { background: #d4edda; color: #155724; }
+        .error { background: #f8d7da; color: #721c24; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .freq-badge {
+            float: right;
+            background: var(--primary);
+            color: white;
+            padding: 2px 5px;
+            border-radius: 3px;
+            font-size: 0.7rem;
+        }
+        .feature-list {
+            padding-left: 15px;
+            margin: 5px 0;
+            font-size: 0.8rem;
+        }
+        .feature-list li {
+            margin-bottom: 3px;
+        }
+        .compression-info {
+            margin-top: 5px;
+            font-size: 0.8rem;
+            color: var(--success);
+        }
     </style>
 </head>
 <body>
-    <h1>LoRa Sender Control Panel (Enhanced)</h1>
+    <h1>LoRa Enhanced Sender <span class="freq-badge">868 MHz</span></h1>
     
-    <div class="container enhanced">
-        <h2>Smart Framework Features</h2>
-        <ul>
-            <li>Adaptive parameter selection based on transmission history</li>
-            <li>Data compression based on content type</li>
-            <li>Optimized for reliability and speed</li>
+    <div id="status" class="status"></div>
+    
+    <div class="panel enhanced-panel">
+        <h2>Smart Framework</h2>
+        <ul class="feature-list">
+            <li><strong>Adaptive Parameters:</strong> Auto-optimizes SF, BW, CR based on history</li>
+            <li><strong>Smart Compression:</strong> Content-specific data compression</li>
+            <li><strong>Performance Optimization:</strong> Balances reliability and speed</li>
         </ul>
     </div>
     
-    <div class="container">
+    <div class="panel">
         <h2>Send Data</h2>
         <form id="dataForm">
-            <select name="dataType" required>
-                <option value="text">Text</option>
-                <option value="image">Image URL</option>
-                <option value="audio">Audio URL</option>
-                <option value="repeat">Text Repeat</option>
-                <option value="random">Random Data</option>
-                <option value="ones">All Ones</option>
-                <option value="zeros">All Zeros</option>
-            </select>
-            <br>
-            <input type="text" name="data" placeholder="Enter data or URL" required>
-            <br>
-            <input type="number" name="length" placeholder="Length (for repeat/random)" min="1">
-            <br>
-            <button type="submit">Send Data</button>
+            <div class="flex">
+                <select id="dataType" name="dataType" required onchange="updatePreview()">
+                    <option value="text">Text Message</option>
+                    <option value="image">Image URL</option>
+                    <option value="audio">Audio URL</option>
+                    <option value="repeat">Repeated Text</option>
+                    <option value="random">Random Data</option>
+                    <option value="ones">All Ones</option>
+                    <option value="zeros">All Zeros</option>
+                </select>
+                <input type="number" id="length" name="length" placeholder="Length" min="1" style="display:none" onchange="updatePreview()">
+            </div>
+            
+            <input type="text" id="data" name="data" placeholder="Enter data or URL" required onkeyup="updatePreview()">
+            
+            <div class="data-preview" id="preview">No data to preview</div>
+            <div id="compression-preview" class="compression-info"></div>
+            
+            <button type="submit" id="sendBtn">Send Data</button>
+            <div id="loading" class="loading">Optimizing and sending data...</div>
         </form>
     </div>
 
-    <div class="transmission-params">
-        <h2>Current Transmission Parameters</h2>
+    <div class="panel">
+        <h2>Adaptive Parameters</h2>
         <table>
-            <tr><th>Parameter</th><th>Value</th><th>Status</th></tr>
-            <tr><td>Spreading Factor (SF)</td><td id="sf">-</td><td id="sf-status">-</td></tr>
-            <tr><td>Bandwidth (BW)</td><td id="bw">-</td><td id="bw-status">-</td></tr>
-            <tr><td>Coding Rate (CR)</td><td id="cr">-</td><td id="cr-status">-</td></tr>
-            <tr><td>Frequency</td><td id="freq">-</td><td>Fixed</td></tr>
+            <tr>
+                <td>SF:</td>
+                <td id="sf">-</td>
+                <td><span id="sf-status" class="badge">-</span></td>
+            </tr>
+            <tr>
+                <td>BW:</td>
+                <td id="bw">-</td>
+                <td><span id="bw-status" class="badge">-</span></td>
+            </tr>
+            <tr>
+                <td>CR:</td>
+                <td id="cr">-</td>
+                <td><span id="cr-status" class="badge">-</span></td>
+            </tr>
+            <tr>
+                <td>Freq:</td>
+                <td id="freq">-</td>
+                <td><span class="badge badge-fixed">Fixed</span></td>
+            </tr>
         </table>
     </div>
 
-    <div class="results">
-        <h2>Transmission Results</h2>
-        <table>
-            <tr><th>Parameter</th><th>Value</th></tr>
-            <tr><td>RSSI</td><td id="rssi">-</td></tr>
-            <tr><td>SNR</td><td id="snr">-</td></tr>
-            <tr><td>Delay</td><td id="delay">-</td></tr>
-            <tr><td>Data Rate</td><td id="datarate">-</td></tr>
-            <tr><td>Compression Ratio</td><td id="compression">-</td></tr>
-            <tr><td>Latency</td><td id="latency">-</td></tr>
-        </table>
+    <div class="grid">
+        <div class="panel">
+            <h2>Signal</h2>
+            <table>
+                <tr><td>RSSI:</td><td id="rssi">-</td></tr>
+                <tr><td>SNR:</td><td id="snr">-</td></tr>
+                <tr><td>Delay:</td><td id="delay">-</td></tr>
+                <tr><td>Rate:</td><td id="datarate">-</td></tr>
+            </table>
+        </div>
+
+        <div class="panel">
+            <h2>Performance</h2>
+            <table>
+                <tr><td>Compression:</td><td id="compression">-</td></tr>
+                <tr><td>Original Size:</td><td id="orig-size">-</td></tr>
+                <tr><td>Compressed:</td><td id="comp-size">-</td></tr>
+                <tr><td>Latency:</td><td id="latency">-</td></tr>
+            </table>
+        </div>
+    </div>
+
+    <div class="panel" id="ackPanel" style="display:none">
+        <h2>Acknowledgment</h2>
+        <div id="ackStatus"></div>
     </div>
 
     <script>
+        // Initialize with frequency
+        document.getElementById('freq').textContent = '868 MHz';
+        
+        function updatePreview() {
+            const dataType = document.getElementById('dataType').value;
+            const dataInput = document.getElementById('data').value;
+            const lengthInput = document.getElementById('length');
+            const preview = document.getElementById('preview');
+            const compressionPreview = document.getElementById('compression-preview');
+            
+            // Show/hide length field based on data type
+            if (['repeat', 'random', 'ones', 'zeros'].includes(dataType)) {
+                lengthInput.style.display = 'block';
+            } else {
+                lengthInput.style.display = 'none';
+            }
+            
+            // Update placeholder based on type
+            const dataField = document.getElementById('data');
+            switch(dataType) {
+                case 'text': dataField.placeholder = 'Enter your message'; break;
+                case 'image': dataField.placeholder = 'Enter image URL'; break;
+                case 'audio': dataField.placeholder = 'Enter audio URL'; break;
+                case 'repeat': dataField.placeholder = 'Text to repeat'; break;
+                case 'random': dataField.placeholder = 'Optional seed'; break;
+                case 'ones': 
+                case 'zeros': dataField.placeholder = 'Optional description'; break;
+            }
+            
+            // Generate preview
+            let previewText = 'No data to preview';
+            let compressionText = '';
+            
+            if (dataInput) {
+                const length = lengthInput.value || '?';
+                switch(dataType) {
+                    case 'text': 
+                        previewText = `Text: "${dataInput}"`; 
+                        if (dataInput.length > 3) {
+                            // Estimate compression for text
+                            let repeats = 0;
+                            for (let i = 0; i < dataInput.length - 1; i++) {
+                                if (dataInput[i] === dataInput[i+1]) repeats++;
+                            }
+                            const ratio = repeats > 0 ? (dataInput.length / (dataInput.length - repeats * 0.5)).toFixed(2) : 1.0;
+                            compressionText = `Estimated compression: ${ratio}x (${repeats > 0 ? 'Compressible' : 'Low compressibility'})`;
+                        }
+                        break;
+                    case 'image': previewText = `Image URL: ${dataInput}`; break;
+                    case 'audio': previewText = `Audio URL: ${dataInput}`; break;
+                    case 'repeat': 
+                        const sample = dataInput.repeat(Math.min(3, length));
+                        previewText = `Repeat (${length}x): "${sample}${length > 3 ? '...' : ''}"`;
+                        compressionText = 'High compression potential: ~10-100x';
+                        break;
+                    case 'random': 
+                        previewText = `Random (${length} chars)`; 
+                        compressionText = 'Low compression potential: ~1x';
+                        break;
+                    case 'ones': 
+                        previewText = `All Ones (${length} chars)`; 
+                        compressionText = 'Maximum compression potential: ~100x';
+                        break;
+                    case 'zeros': 
+                        previewText = `All Zeros (${length} chars)`; 
+                        compressionText = 'Maximum compression potential: ~100x';
+                        break;
+                }
+            }
+            preview.textContent = previewText;
+            compressionPreview.textContent = compressionText;
+        }
+        
         document.getElementById('dataForm').onsubmit = async function(e) {
             e.preventDefault();
-            const formData = new FormData(this);
-            const response = await fetch('/send', {
-                method: 'POST',
-                body: formData
-            });
-            const result = await response.json();
-            updateResults(result);
+            
+            // Show loading, hide button
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('sendBtn').disabled = true;
+            
+            // Clear status
+            const status = document.getElementById('status');
+            status.style.display = 'none';
+            status.className = 'status';
+            
+            try {
+                const formData = new FormData(this);
+                const response = await fetch('/send', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                if (!response.ok) throw new Error(`HTTP error ${response.status}`);
+                
+                const result = await response.json();
+                updateResults(result);
+                
+                // Show success message
+                status.textContent = 'Data sent successfully with optimized parameters!';
+                status.className = 'status success';
+                status.style.display = 'block';
+                
+                // Show acknowledgment panel
+                const ackPanel = document.getElementById('ackPanel');
+                ackPanel.style.display = 'block';
+                document.getElementById('ackStatus').innerHTML = `
+                    <p>✅ Acknowledgment received</p>
+                    <p>RSSI: ${result.rssi} dBm | SNR: ${result.snr} dB</p>
+                    <p>Received at: ${new Date().toLocaleTimeString()}</p>
+                    <p class="compression-info">Data compressed ${result.compressionRatio.toFixed(2)}x</p>
+                `;
+            } catch (error) {
+                console.error('Error:', error);
+                
+                // Show error message
+                status.textContent = `Error: ${error.message}`;
+                status.className = 'status error';
+                status.style.display = 'block';
+                
+                // Show error in ack panel
+                const ackPanel = document.getElementById('ackPanel');
+                ackPanel.style.display = 'block';
+                document.getElementById('ackStatus').innerHTML = `
+                    <p>❌ No acknowledgment received</p>
+                    <p>Error: ${error.message}</p>
+                `;
+            } finally {
+                // Hide loading, enable button
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('sendBtn').disabled = false;
+            }
         };
 
         function updateResults(data) {
             document.getElementById('sf').textContent = data.sf;
-            document.getElementById('bw').textContent = data.bw;
-            document.getElementById('cr').textContent = data.cr;
-            document.getElementById('freq').textContent = data.frequency;
-            document.getElementById('rssi').textContent = data.rssi;
-            document.getElementById('snr').textContent = data.snr;
-            document.getElementById('delay').textContent = data.delay + ' ms';
-            document.getElementById('datarate').textContent = data.datarate + ' bps';
-            document.getElementById('compression').textContent = data.compressionRatio.toFixed(2) + 'x';
-            document.getElementById('latency').textContent = data.latency + ' ms';
+            document.getElementById('bw').textContent = formatBandwidth(data.bw);
+            document.getElementById('cr').textContent = formatCodingRate(data.cr);
+            document.getElementById('freq').textContent = formatFrequency(data.frequency);
+            document.getElementById('rssi').textContent = `${data.rssi} dBm`;
+            document.getElementById('snr').textContent = `${data.snr} dB`;
+            document.getElementById('delay').textContent = `${data.delay} ms`;
+            document.getElementById('datarate').textContent = `${data.datarate} bps`;
+            document.getElementById('compression').textContent = `${data.compressionRatio.toFixed(2)}x`;
+            document.getElementById('latency').textContent = `${data.latency} ms`;
             
-            // Update status indicators
-            document.getElementById('sf-status').textContent = data.sfOptimal ? 'Optimal' : 'Adapting';
-            document.getElementById('bw-status').textContent = data.bwOptimal ? 'Optimal' : 'Adapting';
-            document.getElementById('cr-status').textContent = data.crOptimal ? 'Optimal' : 'Adapting';
+            // Update sizes if available
+            if (data.originalSize) {
+                document.getElementById('orig-size').textContent = `${data.originalSize} bytes`;
+                document.getElementById('comp-size').textContent = `${data.compressedSize} bytes`;
+            } else {
+                // Provide default values since we don't have the actual data length
+                const compressionRatio = data.compressionRatio || 1.0;
+                document.getElementById('orig-size').textContent = `~100 bytes`;
+                document.getElementById('comp-size').textContent = `~${Math.round(100 / compressionRatio)} bytes`;
+            }
+            
+            // Update status indicators with badges
+            updateStatusBadge('sf-status', data.sfStatus || 'Initial');
+            updateStatusBadge('bw-status', data.bwStatus || 'Initial');
+            updateStatusBadge('cr-status', data.crStatus || 'Initial');
         }
+        
+        function updateStatusBadge(elementId, status) {
+            const statusElement = document.getElementById(elementId);
+            statusElement.className = 'badge';
+            
+            if (status.toLowerCase().includes('optimal')) {
+                statusElement.classList.add('badge-optimal');
+                statusElement.textContent = 'Optimal';
+            } else if (status.toLowerCase().includes('adapting')) {
+                statusElement.classList.add('badge-adapting');
+                statusElement.textContent = 'Adapting';
+            } else if (status.toLowerCase().includes('exploring')) {
+                statusElement.classList.add('badge-exploring');
+                statusElement.textContent = 'Exploring';
+            } else {
+                statusElement.classList.add('badge-adapting');
+                statusElement.textContent = status;
+            }
+        }
+        
+        function formatBandwidth(bw) {
+            return bw >= 1000000 ? `${bw/1000000} MHz` : `${bw/1000} kHz`;
+        }
+        
+        function formatCodingRate(cr) {
+            return `4/${cr}`;
+        }
+        
+        function formatFrequency(freq) {
+            return `${freq/1000000} MHz`;
+        }
+        
+        // Initialize preview
+        updatePreview();
     </script>
 </body>
 </html>
@@ -183,15 +525,16 @@ const char* html = R"rawliteral(
 
 // Function to compress data based on its type and content
 String compressData(String dataType, String data) {
-    if (dataType == "text" || dataType.startsWith("TXT:")) {
-        // Simple run-length encoding for text
+    // Simple compression strategies based on data type
+    if (dataType == "text" || dataType == "repeat") {
+        // For text, implement run-length encoding
         String compressed = "";
         int count = 1;
         for (int i = 0; i < data.length(); i++) {
             if (i + 1 < data.length() && data[i] == data[i + 1]) {
                 count++;
             } else {
-                if (count > 3) {
+                if (count > 2) { // More aggressive compression (was 3)
                     compressed += String(count) + data[i];
                 } else {
                     for (int j = 0; j < count; j++) {
@@ -202,21 +545,75 @@ String compressData(String dataType, String data) {
             }
         }
         return compressed;
-    } else if (dataType == "ones" || dataType.startsWith("ONES:")) {
-        // Highly compressible
-        int length = data.length() - 5; // Remove "ONES:" prefix
-        return "ONES:" + String(length);
-    } else if (dataType == "zeros" || dataType.startsWith("ZEROS:")) {
-        // Highly compressible
-        int length = data.length() - 6; // Remove "ZEROS:" prefix
-        return "ZEROS:" + String(length);
-    } else if (dataType == "random" || dataType.startsWith("RAND:")) {
-        // Not compressible
-        return data;
-    } else {
-        // Default, no compression
-        return data;
+    } else if (dataType == "ones" || dataType == "zeros") {
+        // For repeated patterns, just store the count
+        if (data.startsWith("ONES:")) {
+            return "ONES:" + String(data.length() - 5);
+        } else if (data.startsWith("ZEROS:")) {
+            return "ZEROS:" + String(data.length() - 6);
+        }
+    } else if (dataType == "random") {
+        // For random data, implement simple dictionary compression
+        if (data.length() > 20) {
+            // Create a simple dictionary of common patterns
+            String compressed = "RAND:DICT:";
+            String remaining = data.substring(5); // Remove RAND: prefix
+            
+            // Find repeating patterns of 2-4 characters
+            for (int len = 4; len >= 2; len--) {
+                for (int i = 0; i < remaining.length() - len; i++) {
+                    String pattern = remaining.substring(i, i + len);
+                    int occurrences = 0;
+                    int pos = remaining.indexOf(pattern);
+                    
+                    while (pos >= 0) {
+                        occurrences++;
+                        pos = remaining.indexOf(pattern, pos + 1);
+                    }
+                    
+                    // If pattern occurs multiple times, add to dictionary
+                    if (occurrences > 3) {
+                        char dictKey = 'A' + (compressed.length() % 26);
+                        compressed += dictKey + pattern;
+                        
+                        // Replace all occurrences with the dictionary key
+                        int replacePos = remaining.indexOf(pattern);
+                        while (replacePos >= 0) {
+                            remaining = remaining.substring(0, replacePos) + dictKey + 
+                                      remaining.substring(replacePos + pattern.length());
+                            replacePos = remaining.indexOf(pattern, replacePos + 1);
+                        }
+                    }
+                    
+                    // Limit dictionary size
+                    if ((compressed.length() - 10) / 5 >= 10) break;
+                }
+            }
+            
+            return compressed + "::" + remaining;
+        }
+    } else if (dataType == "image" || dataType == "audio") {
+        // For URLs, compress by removing common prefixes/suffixes
+        if (data.startsWith("IMG:") || data.startsWith("AUD:")) {
+            String url = data.substring(4);
+            if (url.startsWith("http://")) {
+                url = "H:" + url.substring(7);
+            } else if (url.startsWith("https://")) {
+                url = "HS:" + url.substring(8);
+            }
+            
+            // Replace common domains
+            url.replace("www.example.com", "EX");
+            url.replace(".com", ".C");
+            url.replace(".org", ".O");
+            url.replace(".net", ".N");
+            
+            return data.substring(0, 4) + url;
+        }
     }
+    
+    // Default: no compression
+    return data;
 }
 
 // Function to calculate compression ratio
@@ -236,21 +633,124 @@ void optimizeLoRaParameters() {
     int bestCR = cr;
     float bestScore = 0;
     
-    // Simple scoring: datarate * success_rate / latency
+    // Count successful transmissions for each parameter set
+    int sfSuccessCount[13] = {0}; // SF7-SF12
+    int bwSuccessCount[3] = {0};  // 125, 250, 500 kHz
+    int crSuccessCount[5] = {0};  // CR 4/5 to 4/8
+    
+    int sfTotalCount[13] = {0};
+    int bwTotalCount[3] = {0};
+    int crTotalCount[5] = {0};
+    
+    // Collect statistics on each parameter
+    for (int i = 0; i < HISTORY_SIZE; i++) {
+        if (performanceHistory[i].sf >= 7 && performanceHistory[i].sf <= 12) {
+            int sfIndex = performanceHistory[i].sf - 7;
+            sfTotalCount[sfIndex]++;
+            if (performanceHistory[i].success) {
+                sfSuccessCount[sfIndex]++;
+            }
+        }
+        
+        int bwIndex = -1;
+        if (performanceHistory[i].bw == 125E3) bwIndex = 0;
+        else if (performanceHistory[i].bw == 250E3) bwIndex = 1;
+        else if (performanceHistory[i].bw == 500E3) bwIndex = 2;
+        
+        if (bwIndex >= 0) {
+            bwTotalCount[bwIndex]++;
+            if (performanceHistory[i].success) {
+                bwSuccessCount[bwIndex]++;
+            }
+        }
+        
+        if (performanceHistory[i].cr >= 5 && performanceHistory[i].cr <= 8) {
+            int crIndex = performanceHistory[i].cr - 5;
+            crTotalCount[crIndex]++;
+            if (performanceHistory[i].success) {
+                crSuccessCount[crIndex]++;
+            }
+        }
+    }
+    
+    // Find best individual parameters
+    float bestSfScore = 0;
+    float bestBwScore = 0;
+    float bestCrScore = 0;
+    
+    // Evaluate SF (Spreading Factor)
+    for (int i = 0; i < 6; i++) { // SF7-SF12
+        if (sfTotalCount[i] > 0) {
+            float successRate = (float)sfSuccessCount[i] / sfTotalCount[i];
+            // Lower SF = higher data rate but shorter range
+            float dataRateFactor = 1.0 / (i + 7); // Approximate inverse relationship
+            float score = successRate * dataRateFactor * 10;
+            
+            if (score > bestSfScore) {
+                bestSfScore = score;
+                bestSF = i + 7;
+            }
+        }
+    }
+    
+    // Evaluate BW (Bandwidth)
+    for (int i = 0; i < 3; i++) {
+        if (bwTotalCount[i] > 0) {
+            float successRate = (float)bwSuccessCount[i] / bwTotalCount[i];
+            // Higher BW = higher data rate but more susceptible to noise
+            float bwValue = (i == 0) ? 125 : (i == 1) ? 250 : 500;
+            float dataRateFactor = bwValue / 125.0; // Proportional to bandwidth
+            float score = successRate * dataRateFactor * 10;
+            
+            if (score > bestBwScore) {
+                bestBwScore = score;
+                bestBW = (i == 0) ? 125E3 : (i == 1) ? 250E3 : 500E3;
+            }
+        }
+    }
+    
+    // Evaluate CR (Coding Rate)
+    for (int i = 0; i < 4; i++) {
+        if (crTotalCount[i] > 0) {
+            float successRate = (float)crSuccessCount[i] / crTotalCount[i];
+            // Lower CR = higher data rate but less error correction
+            float errorCorrectionFactor = 1.0 / (i + 5); // Approximate inverse relationship
+            float score = successRate * errorCorrectionFactor * 10;
+            
+            if (score > bestCrScore) {
+                bestCrScore = score;
+                bestCR = i + 5;
+            }
+        }
+    }
+    
+    // Check if we should update parameters
+    bool shouldUpdate = (bestSF != sf || bestBW != bw || bestCR != cr);
+    
+    // Also check for combinations with high performance
     for (int i = 0; i < HISTORY_SIZE; i++) {
         if (performanceHistory[i].success) {
-            float score = performanceHistory[i].datarate / max(1.0f, performanceHistory[i].latency);
+            float datarate = performanceHistory[i].datarate;
+            float latency = max(1.0f, performanceHistory[i].latency);
+            float rssi = abs(performanceHistory[i].rssi); // Lower absolute RSSI is better
+            float snr = performanceHistory[i].snr;        // Higher SNR is better
+            
+            // Comprehensive score considering all factors
+            float score = (datarate / latency) * (snr / 10.0) * (100.0 / rssi);
+            
             if (score > bestScore) {
                 bestScore = score;
+                // If this combination is significantly better, use it instead
                 bestSF = performanceHistory[i].sf;
                 bestBW = performanceHistory[i].bw;
                 bestCR = performanceHistory[i].cr;
+                shouldUpdate = true;
             }
         }
     }
     
     // Update parameters if better ones found
-    if (bestScore > 0) {
+    if (shouldUpdate) {
         sf = bestSF;
         bw = bestBW;
         cr = bestCR;
@@ -270,41 +770,128 @@ void optimizeLoRaParameters() {
     }
 }
 
-// Function to occasionally try different parameters to explore better options
+// Function to intelligently explore different parameters to find better options
 void exploreParameters() {
-    // 10% chance to explore new parameters
-    if (random(100) < 10) {
+    // Adaptive exploration rate: explore more when performance is poor
+    int exploreChance = 10; // Base 10% chance
+    
+    // Check recent performance
+    int recentSuccesses = 0;
+    int recentTotal = 0;
+    
+    for (int i = 0; i < min(5, historyIndex); i++) {
+        recentTotal++;
+        if (performanceHistory[i].success) {
+            recentSuccesses++;
+        }
+    }
+    
+    // If recent success rate is low, increase exploration chance
+    if (recentTotal > 0) {
+        float successRate = (float)recentSuccesses / recentTotal;
+        if (successRate < 0.5) {
+            exploreChance = 30; // 30% chance if success rate < 50%
+        } else if (successRate < 0.8) {
+            exploreChance = 20; // 20% chance if success rate < 80%
+        }
+    }
+    
+    // Decide whether to explore
+    if (random(100) < exploreChance) {
         int exploreSF = sf;
         int exploreBW = bw;
         int exploreCR = cr;
+        bool paramChanged = false;
         
-        // Try different SF (7-12)
-        if (random(100) < 33) {
-            exploreSF = random(7, 13);
+        // Intelligently choose which parameter to explore based on recent performance
+        // For SF: If signal is weak (low RSSI/SNR), try higher SF for better range
+        float avgRSSI = 0;
+        float avgSNR = 0;
+        int rssiCount = 0;
+        
+        for (int i = 0; i < min(5, historyIndex); i++) {
+            if (performanceHistory[i].success) {
+                avgRSSI += performanceHistory[i].rssi;
+                avgSNR += performanceHistory[i].snr;
+                rssiCount++;
+            }
         }
         
-        // Try different BW (125, 250, 500 kHz)
-        if (random(100) < 33) {
-            int bwOptions[] = {125E3, 250E3, 500E3};
-            exploreBW = bwOptions[random(3)];
+        if (rssiCount > 0) {
+            avgRSSI /= rssiCount;
+            avgSNR /= rssiCount;
+            
+            // If signal is weak, try higher SF for better range
+            if (avgRSSI < -100 || avgSNR < 5) {
+                // Try higher SF for better range
+                exploreSF = min(12, sf + 1);
+                paramChanged = true;
+            } 
+            // If signal is strong, try lower SF for better data rate
+            else if (avgRSSI > -80 && avgSNR > 10 && sf > 7) {
+                exploreSF = max(7, sf - 1);
+                paramChanged = true;
+            }
         }
         
-        // Try different CR (5-8, which maps to 4/5 to 4/8)
-        if (random(100) < 33) {
-            exploreCR = random(5, 9);
+        // If we didn't change SF based on signal strength, randomly explore
+        if (!paramChanged && random(100) < 33) {
+            // Try different SF (7-12), but favor nearby values
+            int sfDelta = random(-2, 3); // -2 to +2
+            exploreSF = constrain(sf + sfDelta, 7, 12);
+            paramChanged = true;
         }
         
-        // Apply exploration parameters temporarily
-        LoRa.setSpreadingFactor(exploreSF);
-        LoRa.setSignalBandwidth(exploreBW);
-        LoRa.setCodingRate4(exploreCR);
+        // Try different BW based on environment
+        if (random(100) < 33) {
+            // In noisy environments (low SNR), try narrower bandwidth
+            if (rssiCount > 0 && avgSNR < 5 && bw > 125E3) {
+                exploreBW = 125E3; // Use narrower bandwidth
+            }
+            // In clean environments, try wider bandwidth
+            else if (rssiCount > 0 && avgSNR > 15) {
+                int bwOptions[] = {125E3, 250E3, 500E3};
+                exploreBW = bwOptions[random(3)];
+            }
+            // Otherwise random
+            else {
+                int bwOptions[] = {125E3, 250E3, 500E3};
+                exploreBW = bwOptions[random(3)];
+            }
+            paramChanged = true;
+        }
         
-        Serial.println("Exploring parameters: SF" + String(exploreSF) + ", BW:" + String(exploreBW) + ", CR:" + String(exploreCR));
+        // Try different CR based on error rates
+        if (random(100) < 33) {
+            // In noisy environments, try higher CR for better error correction
+            if (rssiCount > 0 && avgSNR < 5) {
+                exploreCR = min(8, cr + 1); // More error correction
+            }
+            // In clean environments, try lower CR for better data rate
+            else if (rssiCount > 0 && avgSNR > 15 && cr > 5) {
+                exploreCR = max(5, cr - 1); // Less error correction
+            }
+            // Otherwise random
+            else {
+                exploreCR = random(5, 9);
+            }
+            paramChanged = true;
+        }
         
-        // Store current exploration parameters
-        sf = exploreSF;
-        bw = exploreBW;
-        cr = exploreCR;
+        // Only apply changes if parameters actually changed
+        if (paramChanged) {
+            // Apply exploration parameters
+            LoRa.setSpreadingFactor(exploreSF);
+            LoRa.setSignalBandwidth(exploreBW);
+            LoRa.setCodingRate4(exploreCR);
+            
+            Serial.println("Exploring parameters: SF" + String(exploreSF) + ", BW:" + String(exploreBW) + ", CR:" + String(exploreCR));
+            
+            // Store current exploration parameters
+            sf = exploreSF;
+            bw = exploreBW;
+            cr = exploreCR;
+        }
     }
 }
 
@@ -355,26 +942,43 @@ void handleSend() {
     // Occasionally explore new parameters
     exploreParameters();
     
+    // Add LoRa parameter metadata to the payload
+    String metaPayload = compressedPayload + "<META:SF" + String(sf) + ",BW" + String(bw/1000) + ",CR" + String(cr) + ">";
+    
     // Send via LoRa with enhanced tag
     unsigned long startTime = millis();
     LoRa.beginPacket();
-    LoRa.print("ENHANCED:" + compressedPayload);
+    LoRa.print("ENHANCED:" + metaPayload);
     LoRa.endPacket();
     
-    // Wait for ACK
+    Serial.println("Sending with parameters: SF" + String(sf) + ", BW" + String(bw) + ", CR" + String(cr));
+    
+    // Wait for ACK with adaptive timeout based on SF
+    // Higher SF needs longer timeout
+    int timeout = 2000 + (sf - 7) * 500; // Base 2s + 500ms per SF level above 7
+    
     unsigned long ackTime = millis();
     String ackData = "";
     bool ackReceived = false;
     
-    while (millis() - ackTime < 2000) {
+    Serial.println("Waiting for ACK with timeout: " + String(timeout) + "ms");
+    
+    while (millis() - ackTime < timeout) {
         if (LoRa.parsePacket()) {
             String ack = LoRa.readString();
             if (ack.startsWith("ENHANCED_ACK:")) {
                 ackData = ack.substring(13); // Remove the ENHANCED_ACK: prefix
                 ackReceived = true;
+                Serial.println("ACK received after " + String(millis() - ackTime) + "ms");
                 break;
             }
         }
+        // Short delay to prevent tight loop
+        delay(10);
+    }
+    
+    if (!ackReceived) {
+        Serial.println("No ACK received after " + String(timeout) + "ms");
     }
     
     // Calculate metrics
@@ -480,9 +1084,11 @@ void handleSend() {
     responseDoc["datarate"] = result.datarate;
     responseDoc["compressionRatio"] = compressionRatio;
     responseDoc["latency"] = result.latency;
-    responseDoc["sfOptimal"] = (historyIndex > HISTORY_SIZE / 2); // Consider optimal after half history filled
-    responseDoc["bwOptimal"] = (historyIndex > HISTORY_SIZE / 2);
-    responseDoc["crOptimal"] = (historyIndex > HISTORY_SIZE / 2);
+    responseDoc["originalSize"] = originalPayload.length();
+    responseDoc["compressedSize"] = compressedPayload.length();
+    responseDoc["sfStatus"] = (historyIndex > HISTORY_SIZE / 2) ? "Optimal" : "Adapting";
+    responseDoc["bwStatus"] = (historyIndex > HISTORY_SIZE / 2) ? "Optimal" : "Adapting";
+    responseDoc["crStatus"] = (historyIndex > HISTORY_SIZE / 2) ? "Optimal" : "Adapting";
     
     String responseJson;
     serializeJson(responseDoc, responseJson);
@@ -534,6 +1140,9 @@ void setup() {
     
     // Start DNS server for captive portal
     dnsServer.start(53, "*", WiFi.localIP());
+    
+    // Initialize SPI for LoRa
+    SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_SS);
     
     // Initialize LoRa
     LoRa.setPins(LORA_SS, LORA_RST, LORA_DIO0);

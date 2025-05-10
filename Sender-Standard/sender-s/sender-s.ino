@@ -12,17 +12,20 @@
 const char* ssid = "Dedsec";
 const char* password = "asdfghjkl";
 
-// LoRa pins (adjust according to your board)
+// LoRa pins for TTGO T1 without display
 #define LORA_SS 18
 #define LORA_RST 14
 #define LORA_DIO0 26
+#define SCK 5
+#define MISO 19
+#define MOSI 27
 
 // Web server configuration
 const char* captivePortal = "lorasender.local";
 const char* apiEndpoint = "192.168.25.237:8000";
 
 // LoRa configuration
-const int frequency = 915E6; // 915MHz
+const int frequency = 868E6; // 868MHz
 const int sf = 7; // Spreading Factor
 const int bw = 125E3; // Bandwidth
 const int cr = 5; // Coding Rate
@@ -53,91 +56,323 @@ const char* html = R"rawliteral(
 <html>
 <head>
     <title>LoRa Sender Control Panel</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
-        body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
-        .container { margin-bottom: 20px; }
-        .transmission-params { margin-top: 20px; }
-        .results { margin-top: 20px; }
-        input { width: 100%; padding: 8px; margin: 5px 0; }
-        button { padding: 10px 20px; background: #4CAF50; color: white; border: none; cursor: pointer; }
-        button:hover { background: #45a049; }
-        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
-        th { background-color: #f4f4f4; }
+        :root {
+            --primary: #2c3e50;
+            --secondary: #3498db;
+            --success: #27ae60;
+            --warning: #f39c12;
+            --danger: #e74c3c;
+            --light: #ecf0f1;
+            --dark: #34495e;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
+            max-width: 600px; 
+            margin: 0 auto; 
+            padding: 10px; 
+            font-size: 14px;
+            color: #333;
+            background: #f9f9f9;
+        }
+        h1 { 
+            font-size: 1.2rem; 
+            background: var(--primary); 
+            color: white; 
+            padding: 10px; 
+            border-radius: 5px;
+            margin-bottom: 10px;
+        }
+        h2 { 
+            font-size: 1rem; 
+            border-bottom: 2px solid var(--secondary); 
+            padding-bottom: 5px; 
+            margin: 10px 0 5px 0;
+            color: var(--primary);
+        }
+        .flex { display: flex; gap: 5px; }
+        .flex > * { flex: 1; }
+        .panel {
+            background: white;
+            border-radius: 5px;
+            padding: 10px;
+            margin-bottom: 10px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .badge {
+            display: inline-block;
+            padding: 2px 5px;
+            border-radius: 3px;
+            font-size: 0.7rem;
+            font-weight: bold;
+            color: white;
+            background: var(--secondary);
+        }
+        .data-preview {
+            background: var(--light);
+            border-radius: 3px;
+            padding: 5px;
+            margin: 5px 0;
+            font-family: monospace;
+            font-size: 0.8rem;
+            white-space: pre-wrap;
+            word-break: break-all;
+            max-height: 60px;
+            overflow-y: auto;
+        }
+        select, input {
+            width: 100%;
+            padding: 8px;
+            margin: 5px 0;
+            border: 1px solid #ddd;
+            border-radius: 3px;
+        }
+        button {
+            width: 100%;
+            padding: 8px;
+            background: var(--secondary);
+            color: white;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: background 0.2s;
+        }
+        button:hover { background: #2980b9; }
+        button:active { transform: translateY(1px); }
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 5px;
+        }
+        .loading::after {
+            content: "⏳";
+            animation: spin 1s linear infinite;
+            display: inline-block;
+        }
+        @keyframes spin { 100% { transform: rotate(360deg); } }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.8rem;
+        }
+        th, td {
+            padding: 5px;
+            text-align: left;
+            border-bottom: 1px solid #eee;
+        }
+        th { font-weight: bold; color: var(--dark); }
+        .status {
+            padding: 8px;
+            border-radius: 3px;
+            margin: 5px 0;
+            display: none;
+        }
+        .success { background: #d4edda; color: #155724; }
+        .error { background: #f8d7da; color: #721c24; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .freq-badge {
+            float: right;
+            background: var(--primary);
+            color: white;
+            padding: 2px 5px;
+            border-radius: 3px;
+            font-size: 0.7rem;
+        }
     </style>
 </head>
 <body>
-    <h1>LoRa Sender Control Panel (Standard)</h1>
+    <h1>LoRa Sender <span class="freq-badge">868 MHz</span></h1>
     
-    <div class="container">
+    <div id="status" class="status"></div>
+    
+    <div class="panel">
         <h2>Send Data</h2>
         <form id="dataForm">
-            <select name="dataType" required>
-                <option value="text">Text</option>
-                <option value="image">Image URL</option>
-                <option value="audio">Audio URL</option>
-                <option value="repeat">Text Repeat</option>
-                <option value="random">Random Data</option>
-                <option value="ones">All Ones</option>
-                <option value="zeros">All Zeros</option>
-            </select>
-            <br>
-            <input type="text" name="data" placeholder="Enter data or URL" required>
-            <br>
-            <input type="number" name="length" placeholder="Length (for repeat/random)" min="1">
-            <br>
-            <button type="submit">Send Data</button>
+            <div class="flex">
+                <select id="dataType" name="dataType" required onchange="updatePreview()">
+                    <option value="text">Text Message</option>
+                    <option value="image">Image URL</option>
+                    <option value="audio">Audio URL</option>
+                    <option value="repeat">Repeated Text</option>
+                    <option value="random">Random Data</option>
+                    <option value="ones">All Ones</option>
+                    <option value="zeros">All Zeros</option>
+                </select>
+                <input type="number" id="length" name="length" placeholder="Length" min="1" style="display:none" onchange="updatePreview()">
+            </div>
+            
+            <input type="text" id="data" name="data" placeholder="Enter data or URL" required onkeyup="updatePreview()">
+            
+            <div class="data-preview" id="preview">No data to preview</div>
+            
+            <button type="submit" id="sendBtn">Send Data</button>
+            <div id="loading" class="loading">Sending data...</div>
         </form>
     </div>
 
-    <div class="transmission-params">
-        <h2>Transmission Parameters</h2>
-        <table>
-            <tr><th>Parameter</th><th>Value</th></tr>
-            <tr><td>Spreading Factor (SF)</td><td id="sf">-</td></tr>
-            <tr><td>Bandwidth (BW)</td><td id="bw">-</td></tr>
-            <tr><td>Coding Rate (CR)</td><td id="cr">-</td></tr>
-            <tr><td>Frequency</td><td id="freq">-</td></tr>
-        </table>
+    <div class="grid">
+        <div class="panel">
+            <h2>Parameters</h2>
+            <table>
+                <tr><td>SF:</td><td id="sf">-</td></tr>
+                <tr><td>BW:</td><td id="bw">-</td></tr>
+                <tr><td>CR:</td><td id="cr">-</td></tr>
+                <tr><td>Freq:</td><td id="freq">-</td></tr>
+            </table>
+        </div>
+
+        <div class="panel">
+            <h2>Results</h2>
+            <table>
+                <tr><td>RSSI:</td><td id="rssi">-</td></tr>
+                <tr><td>SNR:</td><td id="snr">-</td></tr>
+                <tr><td>Delay:</td><td id="delay">-</td></tr>
+                <tr><td>Rate:</td><td id="datarate">-</td></tr>
+            </table>
+        </div>
     </div>
 
-    <div class="results">
-        <h2>Transmission Results</h2>
-        <table>
-            <tr><th>Parameter</th><th>Value</th></tr>
-            <tr><td>RSSI</td><td id="rssi">-</td></tr>
-            <tr><td>SNR</td><td id="snr">-</td></tr>
-            <tr><td>Delay</td><td id="delay">-</td></tr>
-            <tr><td>Data Rate</td><td id="datarate">-</td></tr>
-            <tr><td>Compression Ratio</td><td id="compression">-</td></tr>
-            <tr><td>Latency</td><td id="latency">-</td></tr>
-        </table>
+    <div class="panel" id="ackPanel" style="display:none">
+        <h2>Acknowledgment</h2>
+        <div id="ackStatus"></div>
     </div>
 
     <script>
+        // Initialize with frequency
+        document.getElementById('freq').textContent = '868 MHz';
+        
+        function updatePreview() {
+            const dataType = document.getElementById('dataType').value;
+            const dataInput = document.getElementById('data').value;
+            const lengthInput = document.getElementById('length');
+            const preview = document.getElementById('preview');
+            
+            // Show/hide length field based on data type
+            if (['repeat', 'random', 'ones', 'zeros'].includes(dataType)) {
+                lengthInput.style.display = 'block';
+            } else {
+                lengthInput.style.display = 'none';
+            }
+            
+            // Update placeholder based on type
+            const dataField = document.getElementById('data');
+            switch(dataType) {
+                case 'text': dataField.placeholder = 'Enter your message'; break;
+                case 'image': dataField.placeholder = 'Enter image URL'; break;
+                case 'audio': dataField.placeholder = 'Enter audio URL'; break;
+                case 'repeat': dataField.placeholder = 'Text to repeat'; break;
+                case 'random': dataField.placeholder = 'Optional seed'; break;
+                case 'ones': 
+                case 'zeros': dataField.placeholder = 'Optional description'; break;
+            }
+            
+            // Generate preview
+            let previewText = 'No data to preview';
+            if (dataInput) {
+                const length = lengthInput.value || '?';
+                switch(dataType) {
+                    case 'text': previewText = `Text: "${dataInput}"`; break;
+                    case 'image': previewText = `Image URL: ${dataInput}`; break;
+                    case 'audio': previewText = `Audio URL: ${dataInput}`; break;
+                    case 'repeat': 
+                        const sample = dataInput.repeat(Math.min(3, length));
+                        previewText = `Repeat (${length}x): "${sample}${length > 3 ? '...' : ''}"`; 
+                        break;
+                    case 'random': previewText = `Random (${length} chars)`; break;
+                    case 'ones': previewText = `All Ones (${length} chars)`; break;
+                    case 'zeros': previewText = `All Zeros (${length} chars)`; break;
+                }
+            }
+            preview.textContent = previewText;
+        }
+        
         document.getElementById('dataForm').onsubmit = async function(e) {
             e.preventDefault();
-            const formData = new FormData(this);
-            const response = await fetch('/send', {
-                method: 'POST',
-                body: formData
-            });
-            const result = await response.json();
-            updateResults(result);
+            
+            // Show loading, hide button
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('sendBtn').disabled = true;
+            
+            // Clear status
+            const status = document.getElementById('status');
+            status.style.display = 'none';
+            status.className = 'status';
+            
+            try {
+                const formData = new FormData(this);
+                const response = await fetch('/send', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                if (!response.ok) throw new Error(`HTTP error ${response.status}`);
+                
+                const result = await response.json();
+                updateResults(result);
+                
+                // Show success message
+                status.textContent = 'Data sent successfully!';
+                status.className = 'status success';
+                status.style.display = 'block';
+                
+                // Show acknowledgment panel
+                const ackPanel = document.getElementById('ackPanel');
+                ackPanel.style.display = 'block';
+                document.getElementById('ackStatus').innerHTML = `
+                    <p>✅ Acknowledgment received</p>
+                    <p>RSSI: ${result.rssi} dBm | SNR: ${result.snr} dB</p>
+                    <p>Received at: ${new Date().toLocaleTimeString()}</p>
+                `;
+            } catch (error) {
+                console.error('Error:', error);
+                
+                // Show error message
+                status.textContent = `Error: ${error.message}`;
+                status.className = 'status error';
+                status.style.display = 'block';
+                
+                // Show error in ack panel
+                const ackPanel = document.getElementById('ackPanel');
+                ackPanel.style.display = 'block';
+                document.getElementById('ackStatus').innerHTML = `
+                    <p>❌ No acknowledgment received</p>
+                    <p>Error: ${error.message}</p>
+                `;
+            } finally {
+                // Hide loading, enable button
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('sendBtn').disabled = false;
+            }
         };
 
         function updateResults(data) {
             document.getElementById('sf').textContent = data.sf;
-            document.getElementById('bw').textContent = data.bw;
-            document.getElementById('cr').textContent = data.cr;
-            document.getElementById('freq').textContent = data.frequency;
-            document.getElementById('rssi').textContent = data.rssi;
-            document.getElementById('snr').textContent = data.snr;
-            document.getElementById('delay').textContent = data.delay + ' ms';
-            document.getElementById('datarate').textContent = data.datarate + ' bps';
-            document.getElementById('compression').textContent = (data.compressionRatio || 1.0).toFixed(2) + 'x';
-            document.getElementById('latency').textContent = data.latency + ' ms';
+            document.getElementById('bw').textContent = formatBandwidth(data.bw);
+            document.getElementById('cr').textContent = formatCodingRate(data.cr);
+            document.getElementById('freq').textContent = formatFrequency(data.frequency);
+            document.getElementById('rssi').textContent = `${data.rssi} dBm`;
+            document.getElementById('snr').textContent = `${data.snr} dB`;
+            document.getElementById('delay').textContent = `${data.delay} ms`;
+            document.getElementById('datarate').textContent = `${data.datarate} bps`;
         }
+        
+        function formatBandwidth(bw) {
+            return bw >= 1000000 ? `${bw/1000000} MHz` : `${bw/1000} kHz`;
+        }
+        
+        function formatCodingRate(cr) {
+            return `4/${cr}`;
+        }
+        
+        function formatFrequency(freq) {
+            return `${freq/1000000} MHz`;
+        }
+        
+        // Initialize preview
+        updatePreview();
     </script>
 </body>
 </html>
@@ -286,6 +521,9 @@ void setup() {
     
     // Start DNS server for captive portal
     dnsServer.start(53, "*", WiFi.localIP());
+    
+    // Initialize SPI for LoRa
+    SPI.begin(SCK, MISO, MOSI, LORA_SS);
     
     // Initialize LoRa
     LoRa.setPins(LORA_SS, LORA_RST, LORA_DIO0);

@@ -244,11 +244,45 @@
                 </div>
             </div>
         </div>
+
+        <!-- Time Series Analysis Charts -->
+        <div class="card mt-4">
+            <div class="card-header">
+                <i class="fas fa-chart-line me-2"></i>
+                <h5 class="card-title d-inline">Time Series Analysis</h5>
+            </div>
+            <div class="card-body">
+                <div class="row mb-4">
+                    <div class="col-md-4">
+                        <canvas id="rssiChart"></canvas>
+                    </div>
+                    <div class="col-md-4">
+                        <canvas id="snrChart"></canvas>
+                    </div>
+                    <div class="col-md-4">
+                        <canvas id="latencyChart"></canvas>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-md-6">
+                        <canvas id="dataRateChart"></canvas>
+                    </div>
+                    <div class="col-md-6">
+                        <canvas id="compressionChart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
 
     <script>
         let sfChart;
         let bwChart;
+        let rssiChart;
+        let snrChart;
+        let latencyChart;
+        let dataRateChart;
+        let compressionChart;
 
         async function updateStats() {
             try {
@@ -579,13 +613,270 @@
             chart.update();
         }
 
+        // Function to create and update time-series charts
+        async function updateTimeSeriesCharts() {
+            try {
+                const response = await fetch('/api/timeseries');
+                const data = await response.json();
+                
+                // Format timestamps for display
+                const formattedTimestamps = data.timestamps.map(ts => {
+                    const date = new Date(ts);
+                    return date.toLocaleTimeString();
+                });
+                
+                // Create or update RSSI chart
+                if (!rssiChart) {
+                    const ctx = document.getElementById('rssiChart').getContext('2d');
+                    rssiChart = new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: formattedTimestamps,
+                            datasets: [
+                                {
+                                    label: 'Standard RSSI (dBm)',
+                                    data: data.standard.rssi,
+                                    borderColor: 'rgb(255, 99, 132)',
+                                    backgroundColor: 'rgba(255, 99, 132, 0.1)',
+                                    tension: 0.1
+                                },
+                                {
+                                    label: 'Enhanced RSSI (dBm)',
+                                    data: data.enhanced.rssi,
+                                    borderColor: 'rgb(75, 192, 192)',
+                                    backgroundColor: 'rgba(75, 192, 192, 0.1)',
+                                    tension: 0.1
+                                }
+                            ]
+                        },
+                        options: {
+                            responsive: true,
+                            plugins: {
+                                title: {
+                                    display: true,
+                                    text: 'RSSI over Time'
+                                }
+                            },
+                            scales: {
+                                y: {
+                                    title: {
+                                        display: true,
+                                        text: 'RSSI (dBm)'
+                                    }
+                                }
+                            }
+                        }
+                    });
+                } else {
+                    rssiChart.data.labels = formattedTimestamps;
+                    rssiChart.data.datasets[0].data = data.standard.rssi;
+                    rssiChart.data.datasets[1].data = data.enhanced.rssi;
+                    rssiChart.update();
+                }
+                
+                // Create or update SNR chart
+                if (!snrChart) {
+                    const ctx = document.getElementById('snrChart').getContext('2d');
+                    snrChart = new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: formattedTimestamps,
+                            datasets: [
+                                {
+                                    label: 'Standard SNR (dB)',
+                                    data: data.standard.snr,
+                                    borderColor: 'rgb(255, 99, 132)',
+                                    backgroundColor: 'rgba(255, 99, 132, 0.1)',
+                                    tension: 0.1
+                                },
+                                {
+                                    label: 'Enhanced SNR (dB)',
+                                    data: data.enhanced.snr,
+                                    borderColor: 'rgb(75, 192, 192)',
+                                    backgroundColor: 'rgba(75, 192, 192, 0.1)',
+                                    tension: 0.1
+                                }
+                            ]
+                        },
+                        options: {
+                            responsive: true,
+                            plugins: {
+                                title: {
+                                    display: true,
+                                    text: 'SNR over Time'
+                                }
+                            },
+                            scales: {
+                                y: {
+                                    title: {
+                                        display: true,
+                                        text: 'SNR (dB)'
+                                    }
+                                }
+                            }
+                        }
+                    });
+                } else {
+                    snrChart.data.labels = formattedTimestamps;
+                    snrChart.data.datasets[0].data = data.standard.snr;
+                    snrChart.data.datasets[1].data = data.enhanced.snr;
+                    snrChart.update();
+                }
+                
+                // Create or update Latency chart
+                if (!latencyChart) {
+                    const ctx = document.getElementById('latencyChart').getContext('2d');
+                    latencyChart = new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: formattedTimestamps,
+                            datasets: [
+                                {
+                                    label: 'Standard Latency (ms)',
+                                    data: data.standard.latency,
+                                    borderColor: 'rgb(255, 99, 132)',
+                                    backgroundColor: 'rgba(255, 99, 132, 0.1)',
+                                    tension: 0.1
+                                },
+                                {
+                                    label: 'Enhanced Latency (ms)',
+                                    data: data.enhanced.latency,
+                                    borderColor: 'rgb(75, 192, 192)',
+                                    backgroundColor: 'rgba(75, 192, 192, 0.1)',
+                                    tension: 0.1
+                                }
+                            ]
+                        },
+                        options: {
+                            responsive: true,
+                            plugins: {
+                                title: {
+                                    display: true,
+                                    text: 'Latency over Time'
+                                }
+                            },
+                            scales: {
+                                y: {
+                                    title: {
+                                        display: true,
+                                        text: 'Latency (ms)'
+                                    }
+                                }
+                            }
+                        }
+                    });
+                } else {
+                    latencyChart.data.labels = formattedTimestamps;
+                    latencyChart.data.datasets[0].data = data.standard.latency;
+                    latencyChart.data.datasets[1].data = data.enhanced.latency;
+                    latencyChart.update();
+                }
+                
+                // Create or update Data Rate chart
+                if (!dataRateChart) {
+                    const ctx = document.getElementById('dataRateChart').getContext('2d');
+                    dataRateChart = new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: formattedTimestamps,
+                            datasets: [
+                                {
+                                    label: 'Standard Data Rate (bps)',
+                                    data: data.standard.datarate,
+                                    borderColor: 'rgb(255, 99, 132)',
+                                    backgroundColor: 'rgba(255, 99, 132, 0.1)',
+                                    tension: 0.1
+                                },
+                                {
+                                    label: 'Enhanced Data Rate (bps)',
+                                    data: data.enhanced.datarate,
+                                    borderColor: 'rgb(75, 192, 192)',
+                                    backgroundColor: 'rgba(75, 192, 192, 0.1)',
+                                    tension: 0.1
+                                }
+                            ]
+                        },
+                        options: {
+                            responsive: true,
+                            plugins: {
+                                title: {
+                                    display: true,
+                                    text: 'Data Rate over Time'
+                                }
+                            },
+                            scales: {
+                                y: {
+                                    title: {
+                                        display: true,
+                                        text: 'Data Rate (bps)'
+                                    }
+                                }
+                            }
+                        }
+                    });
+                } else {
+                    dataRateChart.data.labels = formattedTimestamps;
+                    dataRateChart.data.datasets[0].data = data.standard.datarate;
+                    dataRateChart.data.datasets[1].data = data.enhanced.datarate;
+                    dataRateChart.update();
+                }
+                
+                // Create or update Compression Ratio chart (enhanced only)
+                if (!compressionChart) {
+                    const ctx = document.getElementById('compressionChart').getContext('2d');
+                    compressionChart = new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: formattedTimestamps,
+                            datasets: [
+                                {
+                                    label: 'Compression Ratio',
+                                    data: data.enhanced.compression_ratio,
+                                    borderColor: 'rgb(153, 102, 255)',
+                                    backgroundColor: 'rgba(153, 102, 255, 0.1)',
+                                    tension: 0.1
+                                }
+                            ]
+                        },
+                        options: {
+                            responsive: true,
+                            plugins: {
+                                title: {
+                                    display: true,
+                                    text: 'Compression Ratio over Time (Enhanced Only)'
+                                }
+                            },
+                            scales: {
+                                y: {
+                                    title: {
+                                        display: true,
+                                        text: 'Compression Ratio'
+                                    },
+                                    beginAtZero: true
+                                }
+                            }
+                        }
+                    });
+                } else {
+                    compressionChart.data.labels = formattedTimestamps;
+                    compressionChart.data.datasets[0].data = data.enhanced.compression_ratio;
+                    compressionChart.update();
+                }
+                
+            } catch (error) {
+                console.error('Error updating time-series charts:', error);
+            }
+        }
+
         // Initial data load
         updateStats();
         updateCharts();
+        updateTimeSeriesCharts();
 
-        // Update data every 30 seconds
-        setInterval(updateStats, 30000);
-        setInterval(updateCharts, 30000);
+        // Update data every 10 seconds for more real-time experience
+        setInterval(updateStats, 10000);
+        setInterval(updateCharts, 10000);
+        setInterval(updateTimeSeriesCharts, 10000);
     </script>
 </body>
 </html>

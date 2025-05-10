@@ -2,3 +2,8 @@ Flask==2.0.1
 Flask-CORS==3.0.10
 python-dotenv==0.19.0
 SQLAlchemy==1.4.23
+
+# Data analysis and visualization
+pandas>=2.0.0
+matplotlib>=3.5.0
+numpy>=1.20.0

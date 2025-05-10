@@ -66,13 +66,12 @@ def get_stats():
     conn = get_db()
     cursor = conn.cursor()
     
-    # Get latest transmission metrics with timestamp and type
+    # Get all transmission metrics with timestamp and type
     cursor.execute('''
         SELECT sf, bw, cr, type, timestamp, source, rssi as avg_rssi, snr as avg_snr,
         datarate as avg_datarate, latency as avg_latency, compression_ratio as avg_compression, data
         FROM transmissions
         ORDER BY timestamp DESC
-        LIMIT 10
     ''')
     
     transmission_stats = cursor.fetchall()
@@ -177,6 +176,64 @@ def get_metrics():
         'bw_metrics': [dict(row) for row in bw_metrics],
         'historical_data': [dict(row) for row in historical_data]
     })
+
+@app.route('/api/timeseries')
+def get_timeseries():
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    # Get all transmissions with timestamp for time-series analysis
+    cursor.execute('''
+        SELECT timestamp, source, rssi, snr, latency, datarate, compression_ratio
+        FROM transmissions
+        WHERE datarate > 0
+        ORDER BY timestamp ASC
+    ''')
+    
+    transmissions = cursor.fetchall()
+    
+    # Format the results
+    result = {
+        'timestamps': [],
+        'standard': {
+            'rssi': [],
+            'snr': [],
+            'latency': [],
+            'datarate': [],
+            'compression_ratio': []
+        },
+        'enhanced': {
+            'rssi': [],
+            'snr': [],
+            'latency': [],
+            'datarate': [],
+            'compression_ratio': []
+        }
+    }
+    
+    # Process the data
+    for row in transmissions:
+        timestamp, source, rssi, snr, latency, datarate, compression_ratio = row
+        
+        # Only add timestamp once
+        if timestamp not in result['timestamps']:
+            result['timestamps'].append(timestamp)
+        
+        # Add data to appropriate source
+        if source == 'standard':
+            result['standard']['rssi'].append(rssi)
+            result['standard']['snr'].append(snr)
+            result['standard']['latency'].append(latency)
+            result['standard']['datarate'].append(datarate)
+            result['standard']['compression_ratio'].append(compression_ratio)
+        elif source == 'enhanced':
+            result['enhanced']['rssi'].append(rssi)
+            result['enhanced']['snr'].append(snr)
+            result['enhanced']['latency'].append(latency)
+            result['enhanced']['datarate'].append(datarate)
+            result['enhanced']['compression_ratio'].append(compression_ratio)
+    
+    return jsonify(result)
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8000)

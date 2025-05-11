@@ -3,7 +3,6 @@
 #include <SPI.h>
 #include <LoRa.h>
 #include <WiFi.h>
-#include <SPI.h>
 #include <WebServer.h>
 #include <DNSServer.h>
 #include <HTTPClient.h>
@@ -31,6 +30,16 @@ int sf = 7; // Spreading Factor
 int bw = 125E3; // Bandwidth
 int cr = 5; // Coding Rate
 const int frequency = 868E6; // 868MHz
+
+// Global variables for LoRa parameters
+unsigned int packetSeq = 0;
+
+// Retransmission tracking
+#define MAX_RETRIES 3
+int retryCount = 0;
+unsigned long lastTransmissionTime = 0;
+bool awaitingAck = false;
+String lastPayload = "";
 
 // EEPROM addresses for storing optimized parameters
 #define EEPROM_SF_ADDR 0
@@ -523,79 +532,79 @@ const char* html = R"rawliteral(
 </html>
 )rawliteral";
 
-// Function to compress data based on its type and content
-String compressData(String dataType, String data) {
-    // Advanced compression strategies based on data type
-    if (dataType == "text" || dataType == "repeat") {
-        // For text, implement hybrid compression (RLE + dictionary for common words)
-        
-        // First, check for common words and replace with shorter codes
-        String commonWords[] = {"the", "and", "that", "have", "for", "not", "with", "you", "this", "but"};
-        String codes[] = {"~1", "~2", "~3", "~4", "~5", "~6", "~7", "~8", "~9", "~0"};
-        
-        String processed = " " + data + " "; // Add spaces to help with word boundaries
-        
-        // Replace common words with codes (only if they are complete words)
-        for (int i = 0; i < 10; i++) {
-            String wordWithBoundaries = " " + commonWords[i] + " ";
-            String codeWithBoundaries = " " + codes[i] + " ";
-            processed.replace(wordWithBoundaries, codeWithBoundaries);
+// Extract sequence number from ACK
+bool extractSequenceNumber(String& data, unsigned int& seqNum) {
+    int seqStart = data.indexOf("<SEQ:");
+    if (seqStart >= 0) {
+        int seqEnd = data.indexOf(">", seqStart);
+        if (seqEnd > seqStart) {
+            String seqStr = data.substring(seqStart + 5, seqEnd);
+            seqNum = seqStr.toInt();
+            return true;
         }
-        
-        // Remove the extra spaces we added
-        processed = processed.substring(1, processed.length() - 1);
-        
-        // Then apply run-length encoding for repeated characters
-        String compressed = "";
-        int count = 1;
-        for (int i = 0; i < processed.length(); i++) {
-            if (i + 1 < processed.length() && processed[i] == processed[i + 1]) {
-                count++;
-            } else {
-                if (count > 2) { // More aggressive compression
-                    compressed += String(count) + processed[i];
-                } else {
-                    for (int j = 0; j < count; j++) {
-                        compressed += processed[i];
-                    }
-                }
-                count = 1;
-            }
-        }
-        
-        // Add compression type marker
-        return "C1:" + compressed;
-    } else if (dataType == "ones" || dataType == "zeros") {
-        // For repeated patterns, just store the count
-        if (data.startsWith("ONES:")) {
-            return "ONES:" + String(data.length() - 5);
-        } else if (data.startsWith("ZEROS:")) {
-            return "ZEROS:" + String(data.length() - 6);
-        }
-    } else if (dataType == "random") {
-        // For random data, implement advanced dictionary compression
-        if (data.length() > 20) {
-            // Create a dictionary of common patterns
-            String compressed = "RAND:DICT:";
-            String remaining = data.substring(5); // Remove RAND: prefix
+    }
+    return false;
+}
+
+// Extract parameter recommendations from receiver
+void extractParameterRecommendations(String& ackData) {
+    int paramStart = ackData.indexOf("<PARAM:");
+    if (paramStart >= 0) {
+        int paramEnd = ackData.indexOf(">", paramStart);
+        if (paramEnd > paramStart) {
+            String paramStr = ackData.substring(paramStart + 7, paramEnd);
+            Serial.println("Received parameter recommendation: " + paramStr);
             
-            // First pass: Find repeating patterns of 3-6 characters (more aggressive)
-            for (int len = 6; len >= 3; len--) {
-                for (int i = 0; i < remaining.length() - len; i++) {
-                    String pattern = remaining.substring(i, i + len);
-                    int occurrences = 0;
-                    int pos = remaining.indexOf(pattern);
+            // Parse parameters: format is SF7,BW125,CR5
+            int sfPos = paramStr.indexOf("SF");
+            int bwPos = paramStr.indexOf("BW");
+            int crPos = paramStr.indexOf("CR");
+            
+            if (sfPos >= 0 && bwPos >= 0 && crPos >= 0) {
+                // Extract SF value
+                int newSF = paramStr.substring(sfPos + 2, bwPos - 1).toInt();
+                
+                // Extract BW value
+                String bwStr = paramStr.substring(bwPos + 2, crPos - 1);
+                int newBW = bwStr.toInt() * 1000; // Convert kHz to Hz
+                
+                // Extract CR value
+                int newCR = paramStr.substring(crPos + 2).toInt();
+                
+                // Apply new parameters if they're valid
+                if (newSF >= 7 && newSF <= 12 && 
+                    (newBW == 125E3 || newBW == 250E3 || newBW == 500E3) && 
+                    newCR >= 5 && newCR <= 8) {
                     
+                    Serial.println("Applying receiver-recommended parameters:");
+                    Serial.println("SF: " + String(newSF) + " (was " + String(sf) + ")");
+                    Serial.println("BW: " + String(newBW) + " (was " + String(bw) + ")");
+                    Serial.println("CR: " + String(newCR) + " (was " + String(cr) + ")");
+                    
+                    // Apply new parameters
+                    sf = newSF;
+                    bw = newBW;
+                    cr = newCR;
+                    
+                    // Apply to LoRa module
+                    LoRa.setSpreadingFactor(sf);
+                    LoRa.setSignalBandwidth(bw);
+                    LoRa.setCodingRate4(cr);
+                    
+                    // Save to EEPROM for persistence
+                    EEPROM.put(EEPROM_SF_ADDR, sf);
+                    EEPROM.put(EEPROM_BW_ADDR, bw);
+                    EEPROM.put(EEPROM_CR_ADDR, cr);
+                    EEPROM.commit();
+                }
                     while (pos >= 0) {
                         occurrences++;
                         pos = remaining.indexOf(pattern, pos + 1);
                     }
                     
                     // If pattern occurs multiple times, add to dictionary
-                    // More aggressive threshold (was 3)
-                    if (occurrences > 2) {
-                        // Use more compact dictionary keys (single byte)
-                        char dictKey = (char)(128 + (compressed.length() % 128)); // Use extended ASCII
+                    if (occurrences > 3) {
+                        char dictKey = 'A' + (compressed.length() % 26);
                         compressed += dictKey + pattern;
                         
                         // Replace all occurrences with the dictionary key
@@ -607,467 +616,160 @@ String compressData(String dataType, String data) {
                         }
                     }
                     
-                    // Larger dictionary size (was 10)
-                    if ((compressed.length() - 10) / 7 >= 20) break;
+                    // Limit dictionary size
+                    if ((compressed.length() - 10) / 5 >= 10) break;
                 }
-            }
-            
-            // Second pass: Look for repeating single characters
-            int count; // Declare the count variable
-            count = 1;
-            String charCompressed = ""; // Declare the charCompressed variable
-            for (int i = 0; i < remaining.length(); i++) {
-                if (i + 1 < remaining.length() && remaining[i] == remaining[i + 1]) {
-                    count++;
-                } else {
-                    if (count > 2) {
-                        charCompressed += String(count) + remaining[i];
-                    } else {
-                        for (int j = 0; j < count; j++) {
-                            charCompressed += remaining[i];
-                        }
-                    }
-                    count = 1;
-                }
-            }
-            
-            // Use the shorter of the two results
-            if (charCompressed.length() < remaining.length()) {
-                remaining = "RLE:" + charCompressed;
             }
             
             return compressed + "::" + remaining;
         }
+        return data; // Return original if no compression applied
     } else if (dataType == "image" || dataType == "audio") {
-        // For URLs, implement more aggressive URL compression
+        // For URLs, compress by removing common prefixes/suffixes
         if (data.startsWith("IMG:") || data.startsWith("AUD:")) {
             String url = data.substring(4);
-            String prefix = data.substring(0, 4);
-            
-            // Protocol compression
             if (url.startsWith("http://")) {
                 url = "H:" + url.substring(7);
             } else if (url.startsWith("https://")) {
                 url = "HS:" + url.substring(8);
             }
             
-            // Domain compression - more comprehensive
-            url.replace("www.", "W.");
+            // Replace common domains
+            url.replace("www.example.com", "EX");
             url.replace(".com", ".C");
             url.replace(".org", ".O");
             url.replace(".net", ".N");
-            url.replace(".io", ".I");
-            url.replace(".edu", ".E");
-            url.replace(".gov", ".G");
-            url.replace(".co.uk", ".UK");
-            url.replace(".co.in", ".IN");
             
-            // Path compression
-            url.replace("/images/", "/I/");
-            url.replace("/audio/", "/A/");
-            url.replace("/video/", "/V/");
-            url.replace("/download/", "/D/");
-            url.replace("/content/", "/C/");
-            
-            // Parameter compression
-            url.replace("?id=", "?i=");
-            url.replace("&size=", "&s=");
-            url.replace("&format=", "&f=");
-            url.replace("&quality=", "&q=");
-            url.replace("&version=", "&v=");
-            
-            return prefix + url;
+            return data.substring(0, 4) + url;
         }
     }
     
-    // Default: try simple run-length encoding for any unhandled type
-    String compressed = "";
-    int count = 1;
-    for (int i = 0; i < data.length(); i++) {
-        if (i + 1 < data.length() && data[i] == data[i + 1]) {
-            count++;
-        } else {
-            if (count > 2) {
-                compressed += String(count) + data[i];
-            } else {
-                for (int j = 0; j < count; j++) {
-                    compressed += data[i];
+    // Default: no compression
+    return data;
+}
+
+// Extract parameter recommendations from receiver
+void extractParameterRecommendations(String& ackData) {
+    int paramStart = ackData.indexOf("<PARAM:");
+    if (paramStart >= 0) {
+        int paramEnd = ackData.indexOf(">", paramStart);
+        if (paramEnd > paramStart) {
+            String paramStr = ackData.substring(paramStart + 7, paramEnd);
+            Serial.println("Received parameter recommendation: " + paramStr);
+            
+            // Parse parameters: format is SF7,BW125,CR5
+            int sfPos = paramStr.indexOf("SF");
+            int bwPos = paramStr.indexOf("BW");
+            int crPos = paramStr.indexOf("CR");
+            
+            if (sfPos >= 0 && bwPos >= 0 && crPos >= 0) {
+                // Extract SF value
+                int newSF = paramStr.substring(sfPos + 2, bwPos - 1).toInt();
+                
+                // Extract BW value
+                String bwStr = paramStr.substring(bwPos + 2, crPos - 1);
+                int newBW = bwStr.toInt() * 1000; // Convert kHz to Hz
+                
+                // Extract CR value
+                int newCR = paramStr.substring(crPos + 2).toInt();
+                
+                // Apply new parameters if they're valid
+                if (newSF >= 7 && newSF <= 12 && 
+                    (newBW == 125E3 || newBW == 250E3 || newBW == 500E3) && 
+                    newCR >= 5 && newCR <= 8) {
+                    
+                    Serial.println("Applying receiver-recommended parameters:");
+                    Serial.println("SF: " + String(newSF) + " (was " + String(sf) + ")");
+                    Serial.println("BW: " + String(newBW) + " (was " + String(bw) + ")");
+                    Serial.println("CR: " + String(newCR) + " (was " + String(cr) + ")");
+                    
+                    // Apply new parameters
+                    sf = newSF;
+                    bw = newBW;
+                    cr = newCR;
+                    
+                    // Apply to LoRa module
+                    LoRa.setSpreadingFactor(sf);
+                    LoRa.setSignalBandwidth(bw);
+                    LoRa.setCodingRate4(cr);
+                    
+                    // Save to EEPROM for persistence
+                    EEPROM.put(EEPROM_SF_ADDR, sf);
+                    EEPROM.put(EEPROM_BW_ADDR, bw);
+                    EEPROM.put(EEPROM_CR_ADDR, cr);
+                    EEPROM.commit();
                 }
             }
-            count = 1;
-        }
-    }
-    
-    // Only use compressed version if it's actually smaller
-    return (compressed.length() < data.length()) ? compressed : data;
-}
-
-// Function to calculate compression ratio
-float getCompressionRatio(String original, String compressed) {
-    if (compressed.length() == 0) return 1.0;
-    return (float)original.length() / compressed.length();
-}
-
-// Function to adaptively select optimal LoRa parameters based on history
-void optimizeLoRaParameters() {
-    // Only optimize if we have enough history
-    if (historyIndex < HISTORY_SIZE / 2) return;
-    
-    // Calculate success rate for each SF, BW, CR combination used
-    int bestSF = sf;
-    int bestBW = bw;
-    int bestCR = cr;
-    float bestScore = 0;
-    
-    // Count successful transmissions for each parameter set
-    int sfSuccessCount[13] = {0}; // SF7-SF12
-    int bwSuccessCount[3] = {0};  // 125, 250, 500 kHz
-    int crSuccessCount[5] = {0};  // CR 4/5 to 4/8
-    
-    int sfTotalCount[13] = {0};
-    int bwTotalCount[3] = {0};
-    int crTotalCount[5] = {0};
-    
-    // Collect statistics on each parameter
-    for (int i = 0; i < HISTORY_SIZE; i++) {
-        if (performanceHistory[i].sf >= 7 && performanceHistory[i].sf <= 12) {
-            int sfIndex = performanceHistory[i].sf - 7;
-            sfTotalCount[sfIndex]++;
-            if (performanceHistory[i].success) {
-                sfSuccessCount[sfIndex]++;
-            }
-        }
-        
-        int bwIndex = -1;
-        if (performanceHistory[i].bw == 125E3) bwIndex = 0;
-        else if (performanceHistory[i].bw == 250E3) bwIndex = 1;
-        else if (performanceHistory[i].bw == 500E3) bwIndex = 2;
-        
-        if (bwIndex >= 0) {
-            bwTotalCount[bwIndex]++;
-            if (performanceHistory[i].success) {
-                bwSuccessCount[bwIndex]++;
-            }
-        }
-        
-        if (performanceHistory[i].cr >= 5 && performanceHistory[i].cr <= 8) {
-            int crIndex = performanceHistory[i].cr - 5;
-            crTotalCount[crIndex]++;
-            if (performanceHistory[i].success) {
-                crSuccessCount[crIndex]++;
-            }
-        }
-    }
-    
-    // Find best individual parameters
-    float bestSfScore = 0;
-    float bestBwScore = 0;
-    float bestCrScore = 0;
-    
-    // Evaluate SF (Spreading Factor)
-    for (int i = 0; i < 6; i++) { // SF7-SF12
-        if (sfTotalCount[i] > 0) {
-            float successRate = (float)sfSuccessCount[i] / sfTotalCount[i];
-            // Lower SF = higher data rate but shorter range
-            float dataRateFactor = 1.0 / (i + 7); // Approximate inverse relationship
-            float score = successRate * dataRateFactor * 10;
-            
-            if (score > bestSfScore) {
-                bestSfScore = score;
-                bestSF = i + 7;
-            }
-        }
-    }
-    
-    // Evaluate BW (Bandwidth)
-    for (int i = 0; i < 3; i++) {
-        if (bwTotalCount[i] > 0) {
-            float successRate = (float)bwSuccessCount[i] / bwTotalCount[i];
-            // Higher BW = higher data rate but more susceptible to noise
-            float bwValue = (i == 0) ? 125 : (i == 1) ? 250 : 500;
-            float dataRateFactor = bwValue / 125.0; // Proportional to bandwidth
-            float score = successRate * dataRateFactor * 10;
-            
-            if (score > bestBwScore) {
-                bestBwScore = score;
-                bestBW = (i == 0) ? 125E3 : (i == 1) ? 250E3 : 500E3;
-            }
-        }
-    }
-    
-    // Evaluate CR (Coding Rate)
-    for (int i = 0; i < 4; i++) {
-        if (crTotalCount[i] > 0) {
-            float successRate = (float)crSuccessCount[i] / crTotalCount[i];
-            // Lower CR = higher data rate but less error correction
-            float errorCorrectionFactor = 1.0 / (i + 5); // Approximate inverse relationship
-            float score = successRate * errorCorrectionFactor * 10;
-            
-            if (score > bestCrScore) {
-                bestCrScore = score;
-                bestCR = i + 5;
-            }
-        }
-    }
-    
-    // Check if we should update parameters
-    bool shouldUpdate = (bestSF != sf || bestBW != bw || bestCR != cr);
-    
-    // Also check for combinations with high performance
-    for (int i = 0; i < HISTORY_SIZE; i++) {
-        if (performanceHistory[i].success) {
-            float datarate = performanceHistory[i].datarate;
-            float latency = max(1.0f, performanceHistory[i].latency);
-            float rssi = abs(performanceHistory[i].rssi); // Lower absolute RSSI is better
-            float snr = performanceHistory[i].snr;        // Higher SNR is better
-            
-            // Comprehensive score considering all factors
-            float score = (datarate / latency) * (snr / 10.0) * (100.0 / rssi);
-            
-            if (score > bestScore) {
-                bestScore = score;
-                // If this combination is significantly better, use it instead
-                bestSF = performanceHistory[i].sf;
-                bestBW = performanceHistory[i].bw;
-                bestCR = performanceHistory[i].cr;
-                shouldUpdate = true;
-            }
-        }
-    }
-    
-    // Update parameters if better ones found
-    if (shouldUpdate) {
-        sf = bestSF;
-        bw = bestBW;
-        cr = bestCR;
-        
-        // Apply new parameters
-        LoRa.setSpreadingFactor(sf);
-        LoRa.setSignalBandwidth(bw);
-        LoRa.setCodingRate4(cr);
-        
-        // Save to EEPROM
-        EEPROM.put(EEPROM_SF_ADDR, sf);
-        EEPROM.put(EEPROM_BW_ADDR, bw);
-        EEPROM.put(EEPROM_CR_ADDR, cr);
-        EEPROM.commit();
-        
-        Serial.println("Optimized parameters: SF" + String(sf) + ", BW:" + String(bw) + ", CR:" + String(cr));
-    }
-}
-
-// Function to intelligently explore different parameters to find better options
-void exploreParameters() {
-    // Adaptive exploration rate: explore more when performance is poor
-    int exploreChance = 10; // Base 10% chance
-    
-    // Check recent performance
-    int recentSuccesses = 0;
-    int recentTotal = 0;
-    
-    for (int i = 0; i < min(5, historyIndex); i++) {
-        recentTotal++;
-        if (performanceHistory[i].success) {
-            recentSuccesses++;
-        }
-    }
-    
-    // If recent success rate is low, increase exploration chance
-    if (recentTotal > 0) {
-        float successRate = (float)recentSuccesses / recentTotal;
-        if (successRate < 0.5) {
-            exploreChance = 30; // 30% chance if success rate < 50%
-        } else if (successRate < 0.8) {
-            exploreChance = 20; // 20% chance if success rate < 80%
-        }
-    }
-    
-    // Decide whether to explore
-    if (random(100) < exploreChance) {
-        int exploreSF = sf;
-        int exploreBW = bw;
-        int exploreCR = cr;
-        bool paramChanged = false;
-        
-        // Intelligently choose which parameter to explore based on recent performance
-        // For SF: If signal is weak (low RSSI/SNR), try higher SF for better range
-        float avgRSSI = 0;
-        float avgSNR = 0;
-        int rssiCount = 0;
-        
-        for (int i = 0; i < min(5, historyIndex); i++) {
-            if (performanceHistory[i].success) {
-                avgRSSI += performanceHistory[i].rssi;
-                avgSNR += performanceHistory[i].snr;
-                rssiCount++;
-            }
-        }
-        
-        if (rssiCount > 0) {
-            avgRSSI /= rssiCount;
-            avgSNR /= rssiCount;
-            
-            // If signal is weak, try higher SF for better range
-            if (avgRSSI < -100 || avgSNR < 5) {
-                // Try higher SF for better range
-                exploreSF = min(12, sf + 1);
-                paramChanged = true;
-            } 
-            // If signal is strong, try lower SF for better data rate
-            else if (avgRSSI > -80 && avgSNR > 10 && sf > 7) {
-                exploreSF = max(7, sf - 1);
-                paramChanged = true;
-            }
-        }
-        
-        // If we didn't change SF based on signal strength, randomly explore
-        if (!paramChanged && random(100) < 33) {
-            // Try different SF (7-12), but favor nearby values
-            int sfDelta = random(-2, 3); // -2 to +2
-            exploreSF = constrain(sf + sfDelta, 7, 12);
-            paramChanged = true;
-        }
-        
-        // Try different BW based on environment
-        if (random(100) < 33) {
-            // In noisy environments (low SNR), try narrower bandwidth
-            if (rssiCount > 0 && avgSNR < 5 && bw > 125E3) {
-                exploreBW = 125E3; // Use narrower bandwidth
-            }
-            // In clean environments, try wider bandwidth
-            else if (rssiCount > 0 && avgSNR > 15) {
-                int bwOptions[] = {125E3, 250E3, 500E3};
-                exploreBW = bwOptions[random(3)];
-            }
-            // Otherwise random
-            else {
-                int bwOptions[] = {125E3, 250E3, 500E3};
-                exploreBW = bwOptions[random(3)];
-            }
-            paramChanged = true;
-        }
-        
-        // Try different CR based on error rates
-        if (random(100) < 33) {
-            // In noisy environments, try higher CR for better error correction
-            if (rssiCount > 0 && avgSNR < 5) {
-                exploreCR = min(8, cr + 1); // More error correction
-            }
-            // In clean environments, try lower CR for better data rate
-            else if (rssiCount > 0 && avgSNR > 15 && cr > 5) {
-                exploreCR = max(5, cr - 1); // Less error correction
-            }
-            // Otherwise random
-            else {
-                exploreCR = random(5, 9);
-            }
-            paramChanged = true;
-        }
-        
-        // Only apply changes if parameters actually changed
-        if (paramChanged) {
-            // Apply exploration parameters
-            LoRa.setSpreadingFactor(exploreSF);
-            LoRa.setSignalBandwidth(exploreBW);
-            LoRa.setCodingRate4(exploreCR);
-            
-            Serial.println("Exploring parameters: SF" + String(exploreSF) + ", BW:" + String(exploreBW) + ", CR:" + String(exploreCR));
-            
-            // Store current exploration parameters
-            sf = exploreSF;
-            bw = exploreBW;
-            cr = exploreCR;
         }
     }
 }
 
-void handleRoot() {
-    server.send(200, "text/html", html);
-}
-
+// Function to handle sending data over LoRa
 void handleSend() {
-    String dataType = server.arg("dataType");
-    String data = server.arg("data");
-    int length = server.arg("length").toInt();
+    // Get current sensor data
+    String payload = getSensorData();
+    Serial.println("Original payload: " + payload);
+    Serial.println("Size: " + String(payload.length()) + " bytes");
     
-    // Prepare transmission data based on type
-    String payload;
-    if (dataType == "image") {
-        payload = "IMG:" + data;
-    } else if (dataType == "audio") {
-        payload = "AUD:" + data;
-    } else if (dataType == "repeat") {
-        payload = "";
-        for (int i = 0; i < length; i++) {
-            payload += data;
-        }
-    } else if (dataType == "random") {
-        payload = "RAND:";
-        for (int i = 0; i < length; i++) {
-            payload += String(random(256), HEX);
-        }
-    } else if (dataType == "ones") {
-        payload = "ONES:";
-        for (int i = 0; i < length; i++) {
-            payload += "1";
-        }
-    } else if (dataType == "zeros") {
-        payload = "ZEROS:";
-        for (int i = 0; i < length; i++) {
-            payload += "0";
-        }
-    } else {
-        payload = "TXT:" + data;
-    }
-
-    // Compress data - improved compression
-    String originalPayload = payload;
-    String compressedPayload = compressData(dataType, payload);
-    float compressionRatio = getCompressionRatio(originalPayload, compressedPayload);
+    // Compress the payload
+    String compressedPayload = compressData(payload);
+    Serial.println("Compressed payload: " + compressedPayload);
+    Serial.println("Compressed size: " + String(compressedPayload.length()) + " bytes");
+    Serial.println("Compression ratio: " + String((float)payload.length() / compressedPayload.length()));
     
-    // Add LoRa parameter metadata to the payload
-    String metaPayload = compressedPayload + "<META:SF" + String(sf) + ",BW" + String(bw/1000) + ",CR" + String(cr) + ">";
+    // Apply current parameters
+    LoRa.setSpreadingFactor(sf);
+    LoRa.setSignalBandwidth(bw);
+    LoRa.setCodingRate4(cr);
     
-    // Send via LoRa with enhanced tag using default parameters for first transmission
-    unsigned long startTime = millis();
-    
-    // Always use default parameters for initial transmission
-    int initialSf = 7;
-    int initialBw = 125E3;
-    int initialCr = 5;
-    
-    // Set default parameters for initial transmission
-    LoRa.setSpreadingFactor(initialSf);
-    LoRa.setSignalBandwidth(initialBw);
-    LoRa.setCodingRate4(initialCr);
-    
-    Serial.println("Initial transmission with default parameters: SF7, BW125, CR5");
-    
+    // Send the data with metadata about the parameters and sequence number
     LoRa.beginPacket();
-    LoRa.print("ENHANCED:" + metaPayload);
+    LoRa.print("ENHANCED:" + compressedPayload);
+    LoRa.print("<SEQ:" + String(packetSeq) + ">");
+    LoRa.print("<SIZE:" + String(payload.length()) + ">");
+    LoRa.print("<META:SF" + String(sf) + ",BW" + String(bw / 1000) + ",CR" + String(cr) + ">");
     LoRa.endPacket();
+    
+    Serial.println("Sending with parameters: SF" + String(sf) + ", BW" + String(bw) + ", CR" + String(cr));
+    
+    // Add sequence number to packet for reliability
+    packetSeq = (packetSeq + 1) % 65536; // 16-bit sequence number
+    lastTransmissionTime = millis();
+    awaitingAck = true;
+    lastPayload = compressedPayload; // Save for potential retransmission
     
     // Wait for ACK with adaptive timeout based on SF
     // Higher SF needs longer timeout
-    int timeout = 2000 + (initialSf - 7) * 500; // Base 2s + 500ms per SF level above 7
+    int timeout = 2000 + (sf - 7) * 500; // Base 2s + 500ms per SF level above 7
     
     unsigned long ackTime = millis();
     String ackData = "";
     bool ackReceived = false;
-    bool receiverParamsReceived = false;
-    int receiverSf = 7;
-    int receiverBw = 125E3;
-    int receiverCr = 5;
     
     Serial.println("Waiting for ACK with timeout: " + String(timeout) + "ms");
     
     while (millis() - ackTime < timeout) {
         if (LoRa.parsePacket()) {
-            String ack = LoRa.readString();
+            String ack = "";
+            while (LoRa.available()) {
+                ack += (char)LoRa.read();
+            }
+            
             if (ack.startsWith("ENHANCED_ACK:")) {
                 ackData = ack.substring(13); // Remove the ENHANCED_ACK: prefix
                 ackReceived = true;
                 Serial.println("ACK received after " + String(millis() - ackTime) + "ms");
+                
+                // Extract sequence number from ACK to verify it's for our packet
+                unsigned int ackSeq = 0;
+                extractSequenceNumber(ackData, ackSeq);
+                
+                // Extract parameter recommendations from receiver
+                extractParameterRecommendations(ackData);
+                
+                // Reset retry counter on successful ACK
+                retryCount = 0;
+                awaitingAck = false;
                 break;
             }
         }
@@ -1077,59 +779,33 @@ void handleSend() {
     
     if (!ackReceived) {
         Serial.println("No ACK received after " + String(timeout) + "ms");
+        
+        // Increment retry counter
+        retryCount++;
+        
+        if (retryCount <= MAX_RETRIES) {
+            Serial.println("Retrying transmission (" + String(retryCount) + "/" + String(MAX_RETRIES) + ")");
+            // Will retry in next loop iteration
+        } else {
+            Serial.println("Max retries reached, giving up on this packet");
+            retryCount = 0;
+            awaitingAck = false;
+        }
     }
     
     // Calculate metrics
-    TransmissionData result;
-    result.type = dataType;
-    result.data = compressedPayload;
-    result.sf = sf;
-    result.bw = bw;
-    result.cr = cr;
-    result.source = "enhanced";
-    result.compression_ratio = compressionRatio;
+    float dataRate = calculateDataRate(payload.length(), compressedPayload.length(), sf, bw, cr);
+    Serial.println("Estimated data rate: " + String(dataRate) + " bps");
     
-    if (ackReceived) {
-        // Parse ACK JSON data
-        DynamicJsonDocument doc(1024);
-        deserializeJson(doc, ackData);
-        
-        result.rssi = doc["rssi"];
-        result.snr = doc["snr"];
-        unsigned long ackTimestamp = doc["timestamp"];
-        result.delay = (millis() - startTime);
+    // Record performance for this transmission
+    recordPerformance(sf, bw, cr, ackReceived, dataRate, ackData);
         result.datarate = (originalPayload.length() * 8) / (result.delay / 1000.0); // Use original length for true data rate
         result.latency = result.delay;
         
-        // Check if receiver has suggested optimal parameters
-        if (doc.containsKey("opt_sf") && doc.containsKey("opt_bw") && doc.containsKey("opt_cr")) {
-            receiverSf = doc["opt_sf"];
-            receiverBw = doc["opt_bw"];
-            receiverCr = doc["opt_cr"];
-            receiverParamsReceived = true;
-            
-            Serial.println("Received optimized parameters from receiver: SF" + String(receiverSf) + 
-                         ", BW" + String(receiverBw) + ", CR" + String(receiverCr));
-            
-            // Apply the receiver's suggested parameters
-            sf = receiverSf;
-            bw = receiverBw;
-            cr = receiverCr;
-            
-            // Update LoRa settings for future transmissions
-            LoRa.setSpreadingFactor(sf);
-            LoRa.setSignalBandwidth(bw);
-            LoRa.setCodingRate4(cr);
-            
-            Serial.println("Applied receiver's optimized parameters");
-        } else {
-            Serial.println("No optimized parameters received from receiver, using current parameters");
-        }
-        
         // Record successful transmission in history
-        performanceHistory[historyIndex].sf = initialSf; // Record with initial parameters
-        performanceHistory[historyIndex].bw = initialBw;
-        performanceHistory[historyIndex].cr = initialCr;
+        performanceHistory[historyIndex].sf = sf;
+        performanceHistory[historyIndex].bw = bw;
+        performanceHistory[historyIndex].cr = cr;
         performanceHistory[historyIndex].rssi = result.rssi;
         performanceHistory[historyIndex].snr = result.snr;
         performanceHistory[historyIndex].datarate = result.datarate;
@@ -1137,18 +813,23 @@ void handleSend() {
         performanceHistory[historyIndex].success = true;
         
         historyIndex = (historyIndex + 1) % HISTORY_SIZE;
+        
+        // Periodically optimize parameters
+        if (historyIndex == 0) {
+            optimizeLoRaParameters();
+        }
     } else {
         // If no ACK received, use local measurements and mark as failed
         result.rssi = -120; // Very poor signal as placeholder
         result.snr = 0;
-        result.delay = timeout; // Timeout value
+        result.delay = 2000; // Timeout value
         result.datarate = 0; // Failed transmission
-        result.latency = timeout;
+        result.latency = 2000;
         
         // Record failed transmission in history
-        performanceHistory[historyIndex].sf = initialSf;
-        performanceHistory[historyIndex].bw = initialBw;
-        performanceHistory[historyIndex].cr = initialCr;
+        performanceHistory[historyIndex].sf = sf;
+        performanceHistory[historyIndex].bw = bw;
+        performanceHistory[historyIndex].cr = cr;
         performanceHistory[historyIndex].rssi = result.rssi;
         performanceHistory[historyIndex].snr = result.snr;
         performanceHistory[historyIndex].datarate = result.datarate;
@@ -1156,16 +837,6 @@ void handleSend() {
         performanceHistory[historyIndex].success = false;
         
         historyIndex = (historyIndex + 1) % HISTORY_SIZE;
-        
-        // If ACK not received, revert to default parameters
-        sf = 7;
-        bw = 125E3;
-        cr = 5;
-        LoRa.setSpreadingFactor(sf);
-        LoRa.setSignalBandwidth(bw);
-        LoRa.setCodingRate4(cr);
-        
-        Serial.println("Reverting to default parameters due to failed transmission");
     }
 
     // Send results to API

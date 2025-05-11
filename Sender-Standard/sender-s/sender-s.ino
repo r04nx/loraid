@@ -423,20 +423,34 @@ void handleSend() {
     LoRa.print("STANDARD:" + payload);
     LoRa.endPacket();
     
-    // Wait for ACK
+    // Wait for ACK with adaptive timeout
+    const int timeout = 2000; // 2 seconds timeout
     unsigned long ackTime = millis();
     String ackData = "";
     bool ackReceived = false;
     
-    while (millis() - ackTime < 2000) {
+    Serial.println("Sent data, waiting for ACK...");
+    
+    while (millis() - ackTime < timeout) {
         if (LoRa.parsePacket()) {
             String ack = LoRa.readString();
+            Serial.println("Received packet: " + ack);
+            
             if (ack.startsWith("STANDARD_ACK:")) {
                 ackData = ack.substring(13); // Remove the STANDARD_ACK: prefix
                 ackReceived = true;
+                Serial.println("ACK received after " + String(millis() - ackTime) + "ms");
                 break;
+            } else {
+                Serial.println("Received non-ACK packet, continuing to wait");
             }
         }
+        // Short delay to prevent tight loop
+        delay(10);
+    }
+    
+    if (!ackReceived) {
+        Serial.println("No ACK received after " + String(timeout) + "ms");
     }
     
     // Calculate metrics
@@ -452,14 +466,30 @@ void handleSend() {
     if (ackReceived) {
         // Parse ACK JSON data
         DynamicJsonDocument doc(1024);
-        deserializeJson(doc, ackData);
+        DeserializationError error = deserializeJson(doc, ackData);
         
-        result.rssi = doc["rssi"];
-        result.snr = doc["snr"];
-        unsigned long ackTimestamp = doc["timestamp"];
-        result.delay = (millis() - startTime);
-        result.datarate = (payload.length() * 8) / (result.delay / 1000.0);
-        result.latency = result.delay;
+        if (!error) {
+            // Successfully parsed JSON
+            result.rssi = doc["rssi"].as<int>();
+            result.snr = doc["snr"].as<float>();
+            unsigned long ackTimestamp = doc["timestamp"].as<unsigned long>();
+            result.delay = (millis() - startTime);
+            result.datarate = (payload.length() * 8) / (result.delay / 1000.0);
+            result.latency = result.delay;
+            
+            Serial.println("Received ACK with RSSI: " + String(result.rssi) + " dBm, SNR: " + String(result.snr) + " dB");
+        } else {
+            // JSON parsing failed
+            Serial.println("Failed to parse ACK JSON: " + String(error.c_str()));
+            Serial.println("Raw ACK data: " + ackData);
+            
+            // Use default values
+            result.rssi = -100; // Default value
+            result.snr = 5;     // Default value
+            result.delay = (millis() - startTime);
+            result.datarate = (payload.length() * 8) / (result.delay / 1000.0);
+            result.latency = result.delay;
+        }
     } else {
         // If no ACK received, use local measurements
         result.rssi = -120; // Very poor signal as placeholder
@@ -467,6 +497,8 @@ void handleSend() {
         result.delay = 2000; // Timeout value
         result.datarate = 0; // Failed transmission
         result.latency = 2000;
+        
+        Serial.println("No ACK received, using default values");
     }
     
     // Prepare JSON response for both API and web interface
@@ -485,21 +517,72 @@ void handleSend() {
     json += "\"compressionRatio\":1.0";
     json += "}";
 
-    // Send results to API
+    // Send results to API with improved error handling
     if (WiFi.status() == WL_CONNECTED) {
         HTTPClient http;
-        http.begin(String("http://") + apiEndpoint + "/api/transmission");
+        String apiUrl = String("http://") + apiEndpoint + "/api/transmission";
+        http.begin(apiUrl);
         http.addHeader("Content-Type", "application/json");
+        
+        Serial.println("Sending data to API: " + apiUrl);
+        Serial.println("JSON payload: " + json);
+        
         int httpResponseCode = http.POST(json);
         if (httpResponseCode > 0) {
             Serial.println("HTTP Response code: " + String(httpResponseCode));
+            String response = http.getString();
+            Serial.println("API response: " + response);
         } else {
             Serial.println("Error sending HTTP request: " + http.errorToString(httpResponseCode));
+            Serial.println("Retrying in 1 second...");
+            delay(1000);
+            
+            // Retry once
+            httpResponseCode = http.POST(json);
+            if (httpResponseCode > 0) {
+                Serial.println("Retry successful. HTTP Response code: " + String(httpResponseCode));
+            } else {
+                Serial.println("Retry failed. Error: " + http.errorToString(httpResponseCode));
+            }
         }
         
         http.end();
     } else {
         Serial.println("WiFi not connected. Cannot send metrics to API.");
+        Serial.println("Attempting to reconnect to WiFi...");
+        
+        // Try to reconnect to WiFi
+        WiFi.disconnect();
+        delay(1000);
+        WiFi.begin(ssid, password);
+        
+        // Wait up to 5 seconds for connection
+        int attempts = 0;
+        while (WiFi.status() != WL_CONNECTED && attempts < 10) {
+            delay(500);
+            Serial.print(".");
+            attempts++;
+        }
+        
+        if (WiFi.status() == WL_CONNECTED) {
+            Serial.println("\nReconnected to WiFi. Retrying API call...");
+            
+            // Retry API call after reconnection
+            HTTPClient http;
+            http.begin(String("http://") + apiEndpoint + "/api/transmission");
+            http.addHeader("Content-Type", "application/json");
+            int httpResponseCode = http.POST(json);
+            
+            if (httpResponseCode > 0) {
+                Serial.println("HTTP Response code after reconnect: " + String(httpResponseCode));
+            } else {
+                Serial.println("Error sending HTTP request after reconnect: " + http.errorToString(httpResponseCode));
+            }
+            
+            http.end();
+        } else {
+            Serial.println("\nFailed to reconnect to WiFi.");
+        }
     }
 
     // Send response to web interface

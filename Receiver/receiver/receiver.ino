@@ -3,30 +3,64 @@
 #include <SPI.h>
 #include <LoRa.h>
 
-// LoRa pins (adjust according to your board)
-#define LORA_SS 18
-#define LORA_RST 14
-#define LORA_DIO0 26
+// LoRa pins for TTGO LoRa32 V2.1
+#define SCK     5    // GPIO5  -- SX1278's SCK
+#define MISO    19   // GPIO19 -- SX1278's MISO
+#define MOSI    27   // GPIO27 -- SX1278's MOSI
+#define SS      18   // GPIO18 -- SX1278's CS
+#define RST     14   // GPIO14 -- SX1278's RESET
+#define DI0     26   // GPIO26 -- SX1278's IRQ(Interrupt Request)
 
-// LoRa configuration
-const int frequency = 868E6; // 868MHz
+// Default LoRa parameters
+int sf = 7;
+int bw = 125E3;
+int cr = 5;
+int preambleLength = 8;
+int syncWord = 0x12;
+int power = 20;       // dBm
 
-// Structure to store reception metrics
+// Structure to hold reception metrics
 struct ReceptionMetrics {
-    int rssi;
-    float snr;
-    unsigned long receiveTime;
-    String source;
-    String data;
+  String source;      // "standard" or "enhanced"
+  String data;        // The received data
+  float rssi;         // Signal strength
+  float snr;          // Signal-to-noise ratio
+  float freqError;    // Frequency error
+  int packetSize;     // Size of the packet
+  unsigned long receiveTime;  // Time when packet was received
 };
+
+// Structure to hold parameter history
+struct ParameterHistory {
+  float rssi;
+  float snr;
+  int sf;
+  int bw;
+  int cr;
+  bool success;
+  unsigned long timestamp;
+};
+
+// Keep track of recent signal metrics for optimization
+#define HISTORY_SIZE 10
+ParameterHistory signalHistory[HISTORY_SIZE];
+int historyIndex = 0;
+
+// Timeout for parameter reset (ms)
+#define PARAM_RESET_TIMEOUT 30000
+unsigned long lastParameterChange = 0;
+bool usingCustomParameters = false;
+
+// SNR thresholds for different SF values
+float snrThresholds[] = {-7.5, -10, -12.5, -15, -17.5, -20}; // For SF7-SF12
 
 void setup() {
     Serial.begin(115200);
     Serial.println("Starting LoRa Receiver...");
     
     // Initialize LoRa
-    LoRa.setPins(LORA_SS, LORA_RST, LORA_DIO0);
-    if (!LoRa.begin(frequency)) {
+    LoRa.setPins(SS, RST, DI0);
+    if (!LoRa.begin(868E6)) {
         Serial.println("LoRa initialization failed!");
         while (1);
     }
@@ -108,17 +142,194 @@ bool extractLoRaParameters(String& data, int& sf, int& bw, int& cr) {
     return false;
 }
 
+// Calculate link budget based on RSSI and receiver sensitivity
+float calculateLinkBudget(float rssi, int sf, int bw) {
+    // Base sensitivity for SF7, BW 125kHz
+    float baseSensitivity = -123.0;
+    
+    // Sensitivity improves by ~2.5dB per SF step
+    float sfAdjustment = (sf - 7) * 2.5;
+    
+    // Sensitivity changes by 3dB when BW doubles
+    float bwAdjustment = 10 * log10((float)bw / 125000.0);
+    
+    // Calculate adjusted sensitivity
+    float sensitivity = baseSensitivity - sfAdjustment + bwAdjustment;
+    
+    // Return link margin
+    return rssi - sensitivity;
+}
+
+// Calculate time on air (transmission time) in milliseconds
+float calculateTimeOnAir(int sf, int cr, int bw, int payloadSize) {
+    // Number of symbols in preamble
+    int nPreamble = 8;
+    
+    // Calculate symbol duration (ms)
+    float tSym = (pow(2, sf) / (bw / 1000.0)) * 1000;
+    
+    // Calculate number of payload symbols (simplified formula)
+    int nPayload = 8 + max(ceil((8.0 * payloadSize - 4.0 * sf + 28) / (4.0 * (sf - 2))) * (cr + 4), 0.0);
+    
+    // Calculate time on air
+    float tPacket = (nPreamble + 4.25) * tSym + nPayload * tSym;
+    
+    return tPacket;
+}
+
+// Calculate data rate in bits per second
+float calculateDataRate(int sf, int cr, int bw) {
+    // Raw bit rate calculation
+    float rb = sf * ((bw / pow(2, sf)));
+    
+    // Effective bit rate with coding rate
+    return rb * (4.0 / cr);
+}
+
+// Calculate reliability score based on SNR, SF and CR
+float getReliabilityScore(float snr, int sf, int cr) {
+    // SNR threshold for different SF values (SF7-SF12)
+    float snrThreshold = -7.5 - ((sf - 7) * 2.5);
+    
+    // SNR margin
+    float snrMargin = snr - snrThreshold;
+    
+    // CR factor (higher CR = more reliability)
+    float crFactor = (cr - 4.0) / 4.0;
+    
+    // Combine factors (limited to range 0-1)
+    float reliability = min(max((snrMargin / 10.0) + crFactor, 0.0), 1.0);
+    
+    return reliability;
+}
+
+// Find optimal parameters based on signal metrics
+void optimizeParameters(float rssi, float snr, int payloadSize, int& optSf, int& optBw, int& optCr) {
+    float bestScore = -1000.0;
+    
+    // Default parameters if optimization fails
+    optSf = 7;
+    optBw = 125E3;
+    optCr = 5;
+    
+    // Try different parameter combinations
+    for (int sf = 7; sf <= 12; sf++) {
+        // Skip SF values that require better SNR than available
+        if (snr < snrThresholds[sf-7]) {
+            continue;
+        }
+        
+        for (int crIndex = 0; crIndex < 4; crIndex++) {
+            int cr = 5 + crIndex; // CR 5-8 (4/5 to 4/8)
+            
+            for (int bwIndex = 0; bwIndex < 3; bwIndex++) {
+                int bw = (bwIndex == 0) ? 125E3 : (bwIndex == 1) ? 250E3 : 500E3;
+                
+                // Calculate metrics for this parameter set
+                float linkMargin = calculateLinkBudget(rssi, sf, bw);
+                float reliability = getReliabilityScore(snr, sf, cr);
+                float dataRate = calculateDataRate(sf, cr, bw);
+                float timeOnAir = calculateTimeOnAir(sf, cr, bw, payloadSize);
+                
+                // Skip if link margin is too small
+                if (linkMargin < 0) {
+                    continue;
+                }
+                
+                // Calculate score - balance between reliability and data rate
+                // Prioritize reliability when signal is weak
+                float reliabilityWeight = (rssi < -100 || snr < 5) ? 0.8 : 0.5;
+                float score;
+                
+                if (reliability < 0.7) { // Minimum reliability threshold
+                    continue;
+                }
+                
+                score = (reliability * reliabilityWeight) + 
+                        (dataRate / 10000.0 * (1 - reliabilityWeight)) - 
+                        (timeOnAir / 10000.0); // Penalize long airtime
+                
+                if (score > bestScore) {
+                    bestScore = score;
+                    optSf = sf;
+                    optBw = bw;
+                    optCr = cr;
+                }
+            }
+        }
+    }
+    
+    // Add to history
+    signalHistory[historyIndex].rssi = rssi;
+    signalHistory[historyIndex].snr = snr;
+    signalHistory[historyIndex].sf = optSf;
+    signalHistory[historyIndex].bw = optBw;
+    signalHistory[historyIndex].cr = optCr;
+    signalHistory[historyIndex].timestamp = millis();
+    
+    historyIndex = (historyIndex + 1) % HISTORY_SIZE;
+    
+    Serial.println("Optimized parameters: SF" + String(optSf) + ", BW" + String(optBw) + ", CR" + String(optCr));
+}
+
+// Adaptive optimization based on historical signal metrics
+void adaptiveOptimize(float rssi, float snr, int payloadSize, int& optSf, int& optBw, int& optCr) {
+    // Calculate average and trend of recent metrics
+    float avgRssi = 0;
+    float avgSnr = 0;
+    int count = 0;
+    
+    // Use up to last 5 entries in history
+    for (int i = 0; i < min(5, HISTORY_SIZE); i++) {
+        // Only use entries from the last 60 seconds
+        if (millis() - signalHistory[i].timestamp < 60000) {
+            avgRssi += signalHistory[i].rssi;
+            avgSnr += signalHistory[i].snr;
+            count++;
+        }
+    }
+    
+    // If we have historical data, use it to adjust current readings
+    if (count > 0) {
+        avgRssi /= count;
+        avgSnr /= count;
+        
+        // Add margin if signal is unstable
+        float rssiDiff = abs(rssi - avgRssi);
+        float snrDiff = abs(snr - avgSnr);
+        
+        // If signal is unstable, be more conservative
+        if (rssiDiff > 10 || snrDiff > 3) {
+            rssi = min(rssi, avgRssi) - 5; // Be pessimistic
+            snr = min(snr, avgSnr) - 2;    // Be pessimistic
+        }
+    }
+    
+    // Call regular optimization with adjusted values
+    optimizeParameters(rssi, snr, payloadSize, optSf, optBw, optCr);
+}
+
 void sendAcknowledgement(ReceptionMetrics metrics) {
-    // Extract and adapt to LoRa parameters if present in enhanced packets
-    int sf = 7; // Default
-    int bw = 125E3; // Default
-    int cr = 5; // Default
+    // Default parameters for ACK
+    int sf = 7;
+    int bw = 125E3;
+    int cr = 5;
+    
+    // For enhanced sender, calculate optimal parameters
+    int optSf = 7;
+    int optBw = 125E3;
+    int optCr = 5;
+    bool includeOptParams = false;
     
     if (metrics.source == "enhanced") {
-        // Try to extract parameters from the data
+        // Extract current parameters if present (for ACK)
         bool paramsFound = extractLoRaParameters(metrics.data, sf, bw, cr);
         
-        // Adapt receiver to these parameters for the acknowledgment if found
+        // Calculate optimal parameters based on signal quality
+        adaptiveOptimize(metrics.rssi, metrics.snr, metrics.data.length(), optSf, optBw, optCr);
+        includeOptParams = true;
+        
+        // Adapt receiver to sender's parameters for the acknowledgment
         if (paramsFound) {
             LoRa.setSpreadingFactor(sf);
             LoRa.setSignalBandwidth(bw);
@@ -127,12 +338,20 @@ void sendAcknowledgement(ReceptionMetrics metrics) {
         }
     }
     
-    // Build ACK message with metrics
+    // Build ACK message with metrics and optimal parameters
     String ackPrefix = metrics.source == "enhanced" ? "ENHANCED_ACK:" : "STANDARD_ACK:";
     String ack = ackPrefix + "{";
     ack += "\"rssi\":" + String(metrics.rssi) + ",";
     ack += "\"snr\":" + String(metrics.snr) + ",";
-    ack += "\"timestamp\":" + String(metrics.receiveTime) + ",";
+    
+    // Include optimal parameters for enhanced sender
+    if (includeOptParams) {
+        ack += "\"opt_sf\":" + String(optSf) + ",";
+        ack += "\"opt_bw\":" + String(optBw) + ",";
+        ack += "\"opt_cr\":" + String(optCr) + ",";
+    }
+    
+    ack += "\"timestamp\":" + String(millis()) + ",";
     ack += "\"data\":\"" + metrics.data + "\"";
     ack += "}";
     
@@ -144,11 +363,12 @@ void sendAcknowledgement(ReceptionMetrics metrics) {
     Serial.println("Sent ACK: " + ack);
     
     // Reset to default parameters for receiving
-    if (metrics.source == "enhanced") {
-        LoRa.setSpreadingFactor(7);
-        LoRa.setSignalBandwidth(125E3);
-        LoRa.setCodingRate4(5);
-    }
+    LoRa.setSpreadingFactor(7);
+    LoRa.setSignalBandwidth(125E3);
+    LoRa.setCodingRate4(5);
+    
+    // Record the last parameter change time
+    lastParameterChange = millis();
 }
 
 // WiFi and API functionality removed

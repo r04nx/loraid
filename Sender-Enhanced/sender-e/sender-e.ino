@@ -1031,6 +1031,11 @@ void handleSend() {
     // Send via LoRa with enhanced tag using default parameters for first transmission
     unsigned long startTime = millis();
     
+    // Store current parameters
+    int currentSf = sf;
+    int currentBw = bw;
+    int currentCr = cr;
+    
     // Always use default parameters for initial transmission
     int initialSf = 7;
     int initialBw = 125E3;
@@ -1046,6 +1051,9 @@ void handleSend() {
     LoRa.beginPacket();
     LoRa.print("ENHANCED:" + metaPayload);
     LoRa.endPacket();
+    
+    // Short delay to ensure packet is fully transmitted
+    delay(50);
     
     // Wait for ACK with adaptive timeout based on SF
     // Higher SF needs longer timeout
@@ -1092,38 +1100,72 @@ void handleSend() {
     if (ackReceived) {
         // Parse ACK JSON data
         DynamicJsonDocument doc(1024);
-        deserializeJson(doc, ackData);
+        DeserializationError error = deserializeJson(doc, ackData);
         
-        result.rssi = doc["rssi"];
-        result.snr = doc["snr"];
-        unsigned long ackTimestamp = doc["timestamp"];
-        result.delay = (millis() - startTime);
-        result.datarate = (originalPayload.length() * 8) / (result.delay / 1000.0); // Use original length for true data rate
-        result.latency = result.delay;
-        
-        // Check if receiver has suggested optimal parameters
-        if (doc.containsKey("opt_sf") && doc.containsKey("opt_bw") && doc.containsKey("opt_cr")) {
-            receiverSf = doc["opt_sf"];
-            receiverBw = doc["opt_bw"];
-            receiverCr = doc["opt_cr"];
-            receiverParamsReceived = true;
-            
-            Serial.println("Received optimized parameters from receiver: SF" + String(receiverSf) + 
-                         ", BW" + String(receiverBw) + ", CR" + String(receiverCr));
-            
-            // Apply the receiver's suggested parameters
-            sf = receiverSf;
-            bw = receiverBw;
-            cr = receiverCr;
-            
-            // Update LoRa settings for future transmissions
+        if (error) {
+            Serial.println("Failed to parse ACK JSON: " + String(error.c_str()));
+            Serial.println("Raw ACK data: " + ackData);
+            // Revert to default parameters on parse error
+            sf = 7;
+            bw = 125E3;
+            cr = 5;
             LoRa.setSpreadingFactor(sf);
             LoRa.setSignalBandwidth(bw);
             LoRa.setCodingRate4(cr);
-            
-            Serial.println("Applied receiver's optimized parameters");
         } else {
-            Serial.println("No optimized parameters received from receiver, using current parameters");
+            // Successfully parsed JSON
+            result.rssi = doc["rssi"];
+            result.snr = doc["snr"];
+            unsigned long ackTimestamp = doc["timestamp"];
+            result.delay = (millis() - startTime);
+            result.datarate = (originalPayload.length() * 8) / (result.delay / 1000.0); // Use original length for true data rate
+            result.latency = result.delay;
+            
+            // Check if receiver has suggested optimal parameters
+            if (doc.containsKey("opt_sf") && doc.containsKey("opt_bw") && doc.containsKey("opt_cr")) {
+                receiverSf = doc["opt_sf"];
+                receiverBw = doc["opt_bw"];
+                receiverCr = doc["opt_cr"];
+                receiverParamsReceived = true;
+                
+                // Validate parameters to ensure they're in valid ranges
+                if (receiverSf >= 7 && receiverSf <= 12 && 
+                    (receiverBw == 125E3 || receiverBw == 250E3 || receiverBw == 500E3) && 
+                    receiverCr >= 5 && receiverCr <= 8) {
+                    
+                    Serial.println("Received optimized parameters from receiver: SF" + String(receiverSf) + 
+                                ", BW" + String(receiverBw) + ", CR" + String(receiverCr));
+                    
+                    // Apply the receiver's suggested parameters
+                    sf = receiverSf;
+                    bw = receiverBw;
+                    cr = receiverCr;
+                    
+                    // Update LoRa settings for future transmissions
+                    LoRa.setSpreadingFactor(sf);
+                    LoRa.setSignalBandwidth(bw);
+                    LoRa.setCodingRate4(cr);
+                    
+                    Serial.println("Applied receiver's optimized parameters");
+                } else {
+                    Serial.println("Received invalid parameters from receiver, using default parameters");
+                    sf = 7;
+                    bw = 125E3;
+                    cr = 5;
+                    LoRa.setSpreadingFactor(sf);
+                    LoRa.setSignalBandwidth(bw);
+                    LoRa.setCodingRate4(cr);
+                }
+            } else {
+                Serial.println("No optimized parameters received from receiver, using current parameters");
+                // Restore the original parameters that were in use before the transmission
+                sf = currentSf;
+                bw = currentBw;
+                cr = currentCr;
+                LoRa.setSpreadingFactor(sf);
+                LoRa.setSignalBandwidth(bw);
+                LoRa.setCodingRate4(cr);
+            }
         }
         
         // Record successful transmission in history

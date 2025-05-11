@@ -1,0 +1,71 @@
+body {
+    font-family: Verdana, Arial, sans-serif;
+    background-color: #f5f7fa;
+    color: #333;
+}
+.chart-container {
+    position: relative;
+    margin: auto;
+    height: 400px;
+    width: 80%;
+    background-color: #fff;
+    border-radius: 8px;
+    padding: 15px;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+.stats-card {
+    margin-bottom: 20px;
+}
+.dashboard-container {
+    max-width: 1400px;
+    margin: 20px auto;
+    padding: 20px;
+}
+.card {
+    border-radius: 8px;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    transition: transform 0.3s ease;
+}
+.card:hover {
+    transform: translateY(-5px);
+}
+.card-header {
+    background-color: #4a6fa5;
+    color: white;
+    font-weight: bold;
+    border-top-left-radius: 8px !important;
+    border-top-right-radius: 8px !important;
+}
+.card-title {
+    font-weight: bold;
+    color: #4a6fa5;
+}
+.table {
+    font-size: 0.9rem;
+}
+.table th {
+    background-color: #4a6fa5;
+    color: white;
+}
+h1 {
+    color: #2c3e50;
+    font-weight: bold;
+    margin-bottom: 30px;
+}
+.icon-container {
+    font-size: 2rem;
+    margin-bottom: 10px;
+    color: #4a6fa5;
+}
+.rssi-card {
+    background-color: #e8f4f8;
+}
+.snr-card {
+    background-color: #e8f8ef;
+}
+.datarate-card {
+    background-color: #f8f4e8;
+}
+.latency-card {
+    background-color: #f8e8e8;
+}

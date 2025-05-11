@@ -27,7 +27,6 @@ struct ReceptionMetrics {
   float snr;          // Signal-to-noise ratio
   float freqError;    // Frequency error
   int packetSize;     // Size of the packet
-  unsigned long receiveTime;  // Time when packet was received
 };
 
 // Structure to hold parameter history

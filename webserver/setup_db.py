@@ -234,7 +234,7 @@ def analyse_data(output_file=None):
     if not df_enhanced.empty:
         axs2[1].plot(df_enhanced["timestamp"], df_enhanced["compression_ratio"], 'bo-', label="Compression Ratio")
         axs2[1].set_ylabel("Compression Ratio")
-        axs2[1].set_title("Compression Ratio over Time (Enhanced Only)")
+        axs[1].set_title("Compression Ratio over Time (Enhanced Only)")
         axs2[1].legend()
         axs2[1].grid(True)
     
@@ -251,6 +251,97 @@ def analyse_data(output_file=None):
     else:
         plt.show()
 
+def import_from_csv(filename):
+    if not os.path.exists(filename):
+        print(f"CSV file '{filename}' does not exist.")
+        return
+    
+    # Ask user for action
+    action = ''
+    while action.lower() not in ['o', 'a']:
+        action = input("Do you want to (O)verwrite or (A)ppend to the transmissions table? [O/A]: ").strip().lower()
+    
+    conn = sqlite3.connect('data.db')
+    cursor = conn.cursor()
+    
+    if action == 'o':
+        # Drop and recreate the transmissions table only
+        cursor.execute('DROP TABLE IF EXISTS transmissions')
+        conn.commit()
+        # Recreate only the transmissions table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS transmissions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                type TEXT NOT NULL,
+                data TEXT NOT NULL,
+                sf INTEGER NOT NULL,
+                bw INTEGER NOT NULL,
+                cr INTEGER NOT NULL,
+                rssi INTEGER,
+                snr REAL,
+                delay INTEGER,
+                datarate REAL,
+                latency INTEGER,
+                source TEXT NOT NULL,
+                compression_ratio REAL
+            )
+        ''')
+        conn.commit()
+        print("Transmissions table overwritten.")
+    else:
+        print("Appending to existing transmissions table.")
+    
+    # Read CSV
+    df = pd.read_csv(filename)
+    
+    # Remove id column if present (let SQLite autoincrement)
+    if 'id' in df.columns:
+        df = df.drop(columns=['id'])
+    
+    # Define required columns and their default values
+    required_columns = {
+        'type': 'unknown',
+        'data': '',
+        'sf': 7,
+        'bw': 125,
+        'cr': 4,
+        'source': 'standard'
+    }
+    
+    # Fill missing required columns with default values
+    for col, default_value in required_columns.items():
+        if col not in df.columns:
+            df[col] = default_value
+        else:
+            # Fill NULL values with default values
+            df[col] = df[col].fillna(default_value)
+    
+    # Convert timestamp to string if needed
+    if 'timestamp' in df.columns:
+        df['timestamp'] = df['timestamp'].astype(str)
+    
+    # Fill missing optional columns with None
+    optional_columns = ['rssi', 'snr', 'delay', 'datarate', 'latency', 'compression_ratio']
+    for col in optional_columns:
+        if col not in df.columns:
+            df[col] = None
+    
+    # Reorder columns to match database schema
+    expected_cols = ['timestamp', 'type', 'data', 'sf', 'bw', 'cr', 'rssi', 'snr', 
+                    'delay', 'datarate', 'latency', 'source', 'compression_ratio']
+    df = df[expected_cols]
+    
+    # Insert into DB
+    try:
+        df.to_sql('transmissions', conn, if_exists='append', index=False)
+        print(f"Imported {len(df)} rows from {filename} into transmissions table.")
+    except sqlite3.IntegrityError as e:
+        print(f"Error importing data: {str(e)}")
+        print("Please check that all required columns have valid values.")
+    finally:
+        conn.close()
+
 if __name__ == '__main__':
     if len(sys.argv) > 1:
         if sys.argv[1] == '--clear':
@@ -263,7 +354,9 @@ if __name__ == '__main__':
             if len(sys.argv) > 2:
                 output_file = sys.argv[2]
             analyse_data(output_file)
+        elif sys.argv[1] == '--import' and len(sys.argv) > 2:
+            import_from_csv(sys.argv[2])
         else:
-            print("Usage: python setup_db.py [--clear | --extract filename.csv | --analyse [output_file.png]]")
+            print("Usage: python setup_db.py [--clear | --extract filename.csv | --analyse [output_file.png] | --import transmissions.csv]")
     else:
         create_tables()

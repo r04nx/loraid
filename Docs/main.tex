@@ -1,0 +1,146 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{float}
+\usepackage{listings}
+\usepackage{xcolor}
+
+\definecolor{codegreen}{rgb}{0,0.6,0}
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+\definecolor{backcolour}{rgb}{0.95,0.95,0.92}
+
+\lstdefinestyle{mystyle}{
+    backgroundcolor=\color{backcolour},   
+    commentstyle=\color{codegreen},
+    keywordstyle=\color{magenta},
+    numberstyle=\tiny\color{codegray},
+    stringstyle=\color{codepurple},
+    basicstyle=\ttfamily\footnotesize,
+    breakatwhitespace=false,         
+    breaklines=true,                 
+    captionpos=b,                    
+    keepspaces=true,                 
+    numbers=left,                    
+    numbersep=5pt,                  
+    showspaces=false,                
+    showstringspaces=false,
+    showtabs=false,                  
+    tabsize=2
+}
+
+\lstset{style=mystyle}
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+\begin{document}
+
+\title{LoraID Connect: Enhancing LoRa Communication Through Adaptive Parameter Optimization and Smart Compression}
+
+\author{
+    \IEEEauthorblockN{Rohan Pawa}
+    \IEEEauthorblockA{UID: 203201020\\
+    Sardar Patel Institute of Technology\\
+    Mumbai, India\\
+    rohan.pawa@spit.ac.in}
+    \and
+    \IEEEauthorblockN{Sarthak Bhosale}
+    \IEEEauthorblockA{UID: 2023201002\\
+    Sardar Patel Institute of Technology\\
+    Mumbai, India\\
+    sarthak.bhosale@spit.ac.in}
+    \and
+    \IEEEauthorblockN{Atharva Kotwal}
+    \IEEEauthorblockA{UID: 2023201022\\
+    Sardar Patel Institute of Technology\\
+    Mumbai, India\\
+    atharva.kotwal@spit.ac.in}
+}
+
+\IEEEauthorblockN{Guide: Prof. Anand Mane}
+\IEEEauthorblockA{Department of Electronics and Telecommunication\\
+Sardar Patel Institute of Technology\\
+Mumbai, India}
+
+\IEEEauthorblockN{Co-Guide: Prof. Deepak Karia}
+\IEEEauthorblockA{Department of Electronics and Telecommunication\\
+Sardar Patel Institute of Technology\\
+Mumbai, India}
+
+\maketitle
+
+\begin{abstract}
+This paper presents LoraID Connect, an enhanced LoRa communication framework that implements adaptive parameter optimization and smart compression techniques to improve the efficiency and reliability of LoRa-based IoT networks. The system features a two-way communication protocol with real-time feedback, content-aware compression algorithms, and dynamic parameter adaptation based on environmental conditions. Through extensive testing and benchmarking, we demonstrate significant improvements in data throughput, reliability, and resource utilization compared to traditional LoRa implementations. The framework includes a web-based interface for monitoring and control, making it more accessible for end-users while maintaining robust performance in various deployment scenarios.
+\end{abstract}
+
+\section{Introduction}
+LoRa (Long Range) technology has emerged as a key enabler for IoT applications, offering long-range, low-power wireless communication. However, traditional LoRa implementations often suffer from suboptimal performance due to fixed parameters and lack of adaptation to changing environmental conditions. This paper presents LoraID Connect, a comprehensive framework that addresses these limitations through innovative approaches to parameter optimization and data compression.
+
+\section{Related Work}
+[Previous work on LoRa optimization, compression algorithms, and IoT communication protocols will be discussed here]
+
+\section{System Architecture}
+\subsection{Overview}
+The LoraID Connect framework consists of three main components:
+\begin{itemize}
+    \item Enhanced Sender (sender-e.ino)
+    \item Receiver (receiver.ino)
+    \item Web Server and Monitoring Interface
+\end{itemize}
+
+\subsection{Enhanced Sender}
+The enhanced sender implements:
+\begin{itemize}
+    \item Smart compression algorithms
+    \item Parameter optimization
+    \item Performance history tracking
+    \item Web interface for user interaction
+\end{itemize}
+
+\subsection{Receiver}
+The receiver component features:
+\begin{itemize}
+    \item Signal quality analysis
+    \item Parameter optimization
+    \item ACK generation with feedback
+    \item Dynamic parameter adjustment
+\end{itemize}
+
+\section{Implementation Details}
+\subsection{Smart Compression}
+[Details about compression algorithms and their implementation]
+
+\subsection{Parameter Optimization}
+[Details about parameter optimization algorithms]
+
+\subsection{Web Interface}
+[Details about web server implementation and monitoring features]
+
+\section{Testing and Results}
+\subsection{Test Setup}
+[Description of test environment and methodology]
+
+\subsection{Performance Analysis}
+[Analysis of test results and performance metrics]
+
+\subsection{Comparison with Traditional Approach}
+[Comparison with traditional LoRa implementation]
+
+\section{Discussion}
+[Discussion of results and implications]
+
+\section{Conclusion}
+[Summary of contributions and future work]
+
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document} 

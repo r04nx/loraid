@@ -27,6 +27,7 @@ struct ReceptionMetrics {
   float snr;          // Signal-to-noise ratio
   float freqError;    // Frequency error
   int packetSize;     // Size of the packet
+  unsigned long receiveTime; // Timestamp when the packet was received
 };
 
 // Structure to hold parameter history
@@ -64,31 +65,51 @@ void setup() {
         while (1);
     }
     
+    // Set initial LoRa parameters
+    LoRa.setSpreadingFactor(sf);
+    LoRa.setSignalBandwidth(bw);
+    LoRa.setCodingRate4(cr);
+    
     Serial.println("LoRa initialized successfully at 868MHz");
     Serial.println("Receiver ready for packets");
 }
 
 void loop() {
-    // Check for incoming LoRa packets
     if (LoRa.parsePacket()) {
-        // Record reception time
         unsigned long receiveTime = millis();
-        
-        // Read packet
         String received = LoRa.readString();
         Serial.println("Received: " + received);
         
-        // Determine source (enhanced or standard)
+        // Use global variables for current parameters
+        int currentSf = sf;
+        int currentBw = bw;
+        int currentCr = cr;
+        
         String source = "standard";
         if (received.startsWith("ENHANCED:")) {
             source = "enhanced";
-            received = received.substring(9); // Remove the ENHANCED: prefix
-        } else if (received.startsWith("STANDARD:")) {
-            source = "standard";
-            received = received.substring(9); // Remove the STANDARD: prefix
+            received = received.substring(9);
+            
+            int packetSf = currentSf;
+            int packetBw = currentBw;
+            int packetCr = currentCr;
+            
+            if (extractLoRaParameters(received, packetSf, packetBw, packetCr)) {
+                // Validate parameters
+                if (packetSf >= 7 && packetSf <= 12 && 
+                    (packetBw == 125E3 || packetBw == 250E3 || packetBw == 500E3) && 
+                    packetCr >= 5 && packetCr <= 8) {
+                    LoRa.setSpreadingFactor(packetSf);
+                    LoRa.setSignalBandwidth(packetBw);
+                    LoRa.setCodingRate4(packetCr);
+                    // Update global variables to track current settings
+                    sf = packetSf;
+                    bw = packetBw;
+                    cr = packetCr;
+                }
+            }
         }
         
-        // Get reception metrics
         ReceptionMetrics metrics;
         metrics.rssi = LoRa.packetRssi();
         metrics.snr = LoRa.packetSnr();
@@ -96,12 +117,17 @@ void loop() {
         metrics.source = source;
         metrics.data = received;
         
-        // Send ACK with metrics
         sendAcknowledgement(metrics);
         
-        // Print metrics to Serial
-        Serial.println("RSSI: " + String(metrics.rssi) + " dBm");
-        Serial.println("SNR: " + String(metrics.snr) + " dB");
+        // Reset to default parameters
+        LoRa.setSpreadingFactor(7);
+        LoRa.setSignalBandwidth(125E3);
+        LoRa.setCodingRate4(5);
+        // Update global variables to track current settings
+        sf = 7;
+        bw = 125E3;
+        cr = 5;
+        LoRa.receive();
     }
 }
 
@@ -309,32 +335,13 @@ void adaptiveOptimize(float rssi, float snr, int payloadSize, int& optSf, int& o
 }
 
 void sendAcknowledgement(ReceptionMetrics metrics) {
-    // Default parameters for ACK
-    int sf = 7;
-    int bw = 125E3;
-    int cr = 5;
-    
-    // For enhanced sender, calculate optimal parameters
+    // Calculate optimal parameters based on signal quality
     int optSf = 7;
     int optBw = 125E3;
     int optCr = 5;
-    bool includeOptParams = false;
     
     if (metrics.source == "enhanced") {
-        // Extract current parameters if present (for ACK)
-        bool paramsFound = extractLoRaParameters(metrics.data, sf, bw, cr);
-        
-        // Calculate optimal parameters based on signal quality
         adaptiveOptimize(metrics.rssi, metrics.snr, metrics.data.length(), optSf, optBw, optCr);
-        includeOptParams = true;
-        
-        // Adapt receiver to sender's parameters for the acknowledgment
-        if (paramsFound) {
-            LoRa.setSpreadingFactor(sf);
-            LoRa.setSignalBandwidth(bw);
-            LoRa.setCodingRate4(cr);
-            Serial.println("Using extracted parameters for ACK: SF" + String(sf) + ", BW" + String(bw) + ", CR" + String(cr));
-        }
     }
     
     // Build ACK message with metrics and optimal parameters
@@ -343,8 +350,7 @@ void sendAcknowledgement(ReceptionMetrics metrics) {
     ack += "\"rssi\":" + String(metrics.rssi) + ",";
     ack += "\"snr\":" + String(metrics.snr) + ",";
     
-    // Include optimal parameters for enhanced sender
-    if (includeOptParams) {
+    if (metrics.source == "enhanced") {
         ack += "\"opt_sf\":" + String(optSf) + ",";
         ack += "\"opt_bw\":" + String(optBw) + ",";
         ack += "\"opt_cr\":" + String(optCr) + ",";
@@ -361,13 +367,8 @@ void sendAcknowledgement(ReceptionMetrics metrics) {
     
     Serial.println("Sent ACK: " + ack);
     
-    // Reset to default parameters for receiving
-    LoRa.setSpreadingFactor(7);
-    LoRa.setSignalBandwidth(125E3);
-    LoRa.setCodingRate4(5);
-    
-    // Record the last parameter change time
-    lastParameterChange = millis();
+    // Ensure we're in receive mode after sending
+    LoRa.receive();
 }
 
 // WiFi and API functionality removed

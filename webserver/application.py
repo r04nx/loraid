@@ -235,5 +235,8 @@ def get_timeseries():
     
     return jsonify(result)
 
+# This is required for AWS Elastic Beanstalk - it looks for an object named 'application'
+application = app
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8000)

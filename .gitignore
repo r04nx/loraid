@@ -25,3 +25,9 @@ __pycache__/
 # Build directories
 build/
 dist/
+/venv/
+# Virtual environment
+venv/
+.venv/
+ENV/
+env/

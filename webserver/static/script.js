@@ -22,9 +22,18 @@ async function updateStats() {
                 data.reception_stats.avg_snr.toFixed(1);
         }
         
+        // Calculate average data rate and latency across all sources
+        let totalDataRate = 0;
+        let totalLatency = 0;
+        let sourceCount = 0;
+        
         // Update source metrics
         if (data.source_metrics && data.source_metrics.length > 0) {
             data.source_metrics.forEach(row => {
+                if (row.avg_datarate) totalDataRate += row.avg_datarate;
+                if (row.avg_latency) totalLatency += row.avg_latency;
+                sourceCount++;
+                
                 if (row.source === 'standard' || row.source === 'enhanced') {
                     const sourcePrefix = row.source === 'standard' ? 'std' : 'enh';
                     if (document.getElementById(`${sourcePrefix}-datarate`)) {
@@ -37,6 +46,15 @@ async function updateStats() {
                     }
                 }
             });
+            
+            // Update average data rate and latency
+            if (sourceCount > 0) {
+                const avgDataRate = totalDataRate / sourceCount;
+                const avgLatency = totalLatency / sourceCount;
+                
+                document.getElementById('avg-datarate').textContent = avgDataRate.toFixed(1);
+                document.getElementById('avg-latency').textContent = avgLatency.toFixed(1);
+            }
         }
         
         // Update comparison metrics

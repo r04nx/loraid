@@ -28,7 +28,7 @@ const char* apiEndpoint = "192.168.25.237:8000";
 
 // LoRa configuration - initial values, will be optimized
 int sf = 7; // Spreading Factor
-int bw = 125E3; // Bandwidth
+int bw = 500E3; // Changed from 125E3 to 500E3
 int cr = 5; // Coding Rate
 const int frequency = 868E6; // 868MHz
 
@@ -1038,7 +1038,7 @@ void handleSend() {
     
     // Always use default parameters for initial transmission
     int initialSf = 7;
-    int initialBw = 125E3;
+    int initialBw = 500E3;  // Changed from 125E3 to 500E3
     int initialCr = 5;
     
     // Set default parameters for initial transmission
@@ -1046,25 +1046,25 @@ void handleSend() {
     LoRa.setSignalBandwidth(initialBw);
     LoRa.setCodingRate4(initialCr);
     
-    Serial.println("Initial transmission with default parameters: SF7, BW125, CR5");
+    Serial.println("Initial transmission with default parameters: SF7, BW500, CR5");
     
     LoRa.beginPacket();
     LoRa.print("ENHANCED:" + metaPayload);
     LoRa.endPacket();
-    
-    // Short delay to ensure packet is fully transmitted
     delay(50);
+    LoRa.receive();
     
     // Wait for ACK with adaptive timeout based on SF
     // Higher SF needs longer timeout
     int timeout = 2000 + (initialSf - 7) * 500; // Base 2s + 500ms per SF level above 7
+    timeout = min(timeout, 5000);  // Cap maximum timeout
     
     unsigned long ackTime = millis();
     String ackData = "";
     bool ackReceived = false;
     bool receiverParamsReceived = false;
     int receiverSf = 7;
-    int receiverBw = 125E3;
+    int receiverBw = 500E3;
     int receiverCr = 5;
     
     Serial.println("Waiting for ACK with timeout: " + String(timeout) + "ms");
@@ -1107,7 +1107,7 @@ void handleSend() {
             Serial.println("Raw ACK data: " + ackData);
             // Revert to default parameters on parse error
             sf = 7;
-            bw = 125E3;
+            bw = 500E3;
             cr = 5;
             LoRa.setSpreadingFactor(sf);
             LoRa.setSignalBandwidth(bw);
@@ -1150,7 +1150,7 @@ void handleSend() {
                 } else {
                     Serial.println("Received invalid parameters from receiver, using default parameters");
                     sf = 7;
-                    bw = 125E3;
+                    bw = 500E3;
                     cr = 5;
                     LoRa.setSpreadingFactor(sf);
                     LoRa.setSignalBandwidth(bw);
@@ -1201,7 +1201,7 @@ void handleSend() {
         
         // If ACK not received, revert to default parameters
         sf = 7;
-        bw = 125E3;
+        bw = 500E3;  // Changed from 125E3 to 500E3
         cr = 5;
         LoRa.setSpreadingFactor(sf);
         LoRa.setSignalBandwidth(bw);
@@ -1285,6 +1285,9 @@ void setup() {
         Serial.println("Loaded parameters from EEPROM: SF" + String(sf) + ", BW:" + String(bw) + ", CR:" + String(cr));
     } else {
         // Initialize EEPROM with default values
+        sf = 7;
+        bw = 500E3;  // Changed from 125E3 to 500E3
+        cr = 5;
         EEPROM.put(EEPROM_SF_ADDR, sf);
         EEPROM.put(EEPROM_BW_ADDR, bw);
         EEPROM.put(EEPROM_CR_ADDR, cr);

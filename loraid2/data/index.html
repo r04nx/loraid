@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>LoRa Monitor</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background: #f0f0f0;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        .card {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .metrics {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+        }
+        .metric {
+            text-align: center;
+        }
+        .metric-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #2196F3;
+        }
+        .metric-label {
+            color: #666;
+            margin-top: 5px;
+        }
+        .controls {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 10px;
+        }
+        input, select {
+            width: 100%;
+            padding: 8px;
+            margin: 5px 0;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        button {
+            background: #2196F3;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background: #1976D2;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="card">
+            <h2>LoRa Performance Monitor</h2>
+            <div class="metrics">
+                <div class="metric">
+                    <div class="metric-value" id="rssi">--</div>
+                    <div class="metric-label">RSSI (dBm)</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-value" id="snr">--</div>
+                    <div class="metric-label">SNR (dB)</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-value" id="toa">--</div>
+                    <div class="metric-label">Time on Air (ms)</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-value" id="pdr">--</div>
+                    <div class="metric-label">Packet Delivery Rate (%)</div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="card">
+            <h2>LoRa Parameters</h2>
+            <div class="controls">
+                <div>
+                    <label>Spreading Factor</label>
+                    <select id="sf">
+                        <option value="7">SF7</option>
+                        <option value="8">SF8</option>
+                        <option value="9">SF9</option>
+                        <option value="10">SF10</option>
+                        <option value="11">SF11</option>
+                        <option value="12">SF12</option>
+                    </select>
+                </div>
+                <div>
+                    <label>Coding Rate</label>
+                    <select id="cr">
+                        <option value="5">4/5</option>
+                        <option value="6">4/6</option>
+                        <option value="7">4/7</option>
+                        <option value="8">4/8</option>
+                    </select>
+                </div>
+                <div>
+                    <label>Bandwidth (kHz)</label>
+                    <select id="bw">
+                        <option value="125000">125</option>
+                        <option value="250000">250</option>
+                        <option value="500000">500</option>
+                    </select>
+                </div>
+                <div>
+                    <label>TX Power (dBm)</label>
+                    <input type="number" id="tp" min="2" max="20" value="17">
+                </div>
+            </div>
+            <button onclick="updateParameters()">Update Parameters</button>
+        </div>
+    </div>
+
+    <script>
+        function updateMetrics() {
+            fetch('/api/metrics')
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('rssi').textContent = data.rssi.toFixed(1);
+                    document.getElementById('snr').textContent = data.snr.toFixed(1);
+                    document.getElementById('toa').textContent = data.timeOnAir;
+                    document.getElementById('pdr').textContent = ((data.success ? 100 : 0)).toFixed(1);
+                });
+        }
+
+        function updateParameters() {
+            const params = {
+                sf: parseInt(document.getElementById('sf').value),
+                cr: parseInt(document.getElementById('cr').value),
+                bw: parseInt(document.getElementById('bw').value),
+                tp: parseInt(document.getElementById('tp').value)
+            };
+
+            fetch('/api/parameters', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(params)
+            })
+            .then(response => response.json())
+            .then(data => {
+                alert('Parameters updated successfully');
+            })
+            .catch(error => {
+                console.error('Error updating parameters:', error);
+            });
+        }
+    </script>
+</body>
+</html> 
